@@ -1,290 +1,224 @@
-# CredLens AI — Phase 5 Architecture
+# CredLens NarrativeAI
 
-> Real-time fact verification for YouTube Shorts.
-> Retrieval-first. LLM-last-resort. Resilient when APIs are down.
+## Phase 1 – Narrative Verification Foundation
 
----
+CredLens NarrativeAI verifies the overall narrative of a YouTube Short rather than isolated sentences or keyword-matched claims.
 
-## What It Does
-
-CredLens reads YouTube Shorts captions in real-time and runs them through a multi-stage local + retrieval pipeline to detect and evaluate verifiable factual claims — surfacing the result as an unobtrusive overlay on the video.
+The goal is to reduce API dependency, improve contextual understanding, and provide evidence-based narrative verification.
 
 ---
 
-## Architecture Diagram
+## Vision
 
-```
-YouTube Short Caption Stream
-        │
-        ▼
-┌─────────────────────────┐
-│  Watch-Time Gate (3 s)  │  Swipe lock — ignore first 3 s to prevent
-│  + Caption Debounce     │  false triggers on swipe navigation
-└────────────┬────────────┘
-             │ transcript (≥ 40 words)
-             ▼
-┌─────────────────────────┐
-│  Transcript Pre-Filter  │  Rejects: music, filler, emoji spam, repetition
-│  (transcriptFilter.ts)  │  Zero API cost
-└────────────┬────────────┘
-             │ pass
-             ▼
-┌─────────────────────────┐
-│  Content Filter         │  Scans for factual-claim signal patterns
-│  (claimFilter.ts)       │  e.g. "research shows", "% of", "banned"
-└────────────┬────────────┘
-             │ has claim signals
-             ▼
-┌─────────────────────────┐
-│  Claim Extractor        │  Extracts only factual-looking sentences
-│  (claimExtractor.ts)    │  Reduces token payload by 70–90%
-└────────────┬────────────┘
-             │ candidate sentences
-             ▼
-┌─────────────────────────┐  ← NEW (Phase 5)
-│  Verifiability Filter   │  Rejects: "I'm a dietitian", "Follow me",
-│  (verifiabilityFilter)  │  "Watch till the end", "This is my experience"
-└────────────┬────────────┘  Allows: "Protein shakes damage kidneys"
-             │ best verifiable claim
-             ▼
-┌─────────────────────────┐
-│  Claim Hash Cache       │  SHA-256(claim) → IndexedDB + chrome.storage
-│  (cacheService.ts)      │  ← Checked BEFORE retrieval (Phase 5 fix)
-└────────────┬────────────┘
-     hit ◄───┤ miss
-     │       ▼
-     │  ┌─────────────────────────┐
-     │  │  Local Classifier       │  Keyword-based: health / science /
-     │  │  (claimClassifier.ts)   │  politics / news / finance / other
-     │  └────────────┬────────────┘
-     │               │ category
-     │               ▼
-     │  ┌─────────────────────────┐
-     │  │  Smart Retrieval        │  Category-aware — no blanket queries
-     │  │  (retrievalEngine.ts)   │
-     │  │                         │  health    → PubMed only
-     │  │                         │  science   → PubMed + FactCheck
-     │  │                         │  politics  → FactCheck + News
-     │  │                         │  news      → FactCheck + News
-     │  │                         │  finance   → FactCheck + News
-     │  │                         │  general   → FactCheck only
-     │  └────────────┬────────────┘
-     │               │ evidence bundle
-     │               ▼
-     │  ┌─────────────────────────┐
-     │  │  Confidence Engine      │  Relevance-based scoring:
-     │  │  computeRetrieval()     │  • Source authority
-     │  │                         │  • Source relevance to category
-     │  │                         │  • Source agreement
-     │  │                         │  • Claim specificity (numeric bonus)
-     │  │                         │  News NEVER boosts health claims
-     │  └────────────┬────────────┘
-     │               │ retrieval confidence 0–100
-     │               ▼
-     │  ┌─────────────────────────────────────────┐
-     │  │           Decision Engine               │
-     │  │                                         │
-     │  │  confidence ≥ 60 or hasEvidence         │
-     │  │    → Local Synthesis (no LLM)           │
-     │  │                                         │
-     │  │  confidence < 60 AND no evidence        │
-     │  │    → Gemini synthesis (if key present)  │  optional
-     │  │    → Local synthesis fallback           │  always works
-     │  └────────────┬────────────────────────────┘
-     │               │ ClaimAnalysis
-     │               ▼
-     │  ┌─────────────────────────┐
-     │  │  ConfidenceScorer       │  Final multi-factor scoring:
-     │  │  .compute()             │  credibility / evidence / manip. risk
-     │  └────────────┬────────────┘
-     │               │ final confidence
-     │               ▼
-     │  ┌─────────────────────────┐
-     │  │  OpenRouter Escalation  │  LAST RESORT — only if:
-     │  │  (escalationManager)    │  1. confidence < 60 AND
-     │  │                         │  2. openRouterApiKey configured
-     │  └────────────┬────────────┘  Otherwise: silently skipped
-     │               │
-     └──────►  Cache Result (videoId + claimHash) → Respond to UI
-```
+Most misinformation is communicated through narratives rather than individual claims.
+
+Traditional fact-checkers attempt to verify isolated statements.
+
+CredLens instead attempts to understand:
+
+* What story the creator is telling
+* What conclusion the viewer is expected to believe
+* Whether the overall narrative is supported by evidence
+
+Example:
+
+Video narrative:
+
+"Soy products, flax seeds and cruciferous vegetables damage hormonal health."
+
+CredLens output:
+
+"The video largely exaggerates the hormonal risks of common foods. Current evidence does not support the claim that moderate soy consumption causes estrogen dominance, and evidence for hormonal harm from flax seeds or cruciferous vegetables is weak."
 
 ---
 
-## Processing Pipeline
+## Architecture
 
-| Stage | File | API Cost | Required |
-|-------|------|----------|----------|
-| Watch-time gate | `content/index.tsx` | Free | Yes |
-| Transcript pre-filter | `transcriptFilter.ts` | Free | Yes |
-| Content filter | `claimFilter.ts` | Free | Yes |
-| Claim extraction | `claimExtractor.ts` | Free | Yes |
-| Verifiability filter | `verifiabilityFilter.ts` | Free | Yes |
-| Claim hash cache | `cacheService.ts` | Free | Yes |
-| Local classification | `claimClassifier.ts` | Free | Yes |
-| FactCheck Tools | `factCheckService.ts` | Google API key | Conditional |
-| PubMed search | `healthService.ts` | Free (public) | Conditional |
-| Google News RSS | `newsService.ts` | Free (RSS) | Conditional |
-| Gemini synthesis | `geminiService.ts` | Gemini key | **Optional** |
-| OpenRouter | `openRouterService.ts` | OpenRouter key | **Optional** |
-
----
-
-## Cache Strategy
-
-CredLens uses a 3-tier cache with 24-hour TTL:
-
-```
-L1: In-memory Map         (instant, lost on worker sleep)
-L2: chrome.storage.local  (persistent, 5 MB limit)
-L3: IndexedDB             (persistent, large capacity)
-```
-
-**Two cache keys per result:**
-- `credlens_cache_{videoId}` — per-video result
-- `credlens_claim_cache_{SHA256(claim)}` — cross-video deduplication
-
-If the same claim appears in different videos, the second video returns instantly from cache with **zero API calls**.
-
-**Cache is checked in this order:**
-1. Video ID cache — before any processing
-2. Claim hash cache — after verifiability filter, before retrieval
+YouTube Short
+↓
+Transcript Collection
+↓
+Transcript Stabilizer
+↓
+Narrative Engine
+↓
+Narrative Cache Check
+↓
+Evidence Retrieval
+↓
+Verdict Builder
+↓
+Credibility Overlay
 
 ---
 
-## Retrieval Routing
+## Processing Flow
 
-| Category | PubMed | FactCheck | Google News |
-|----------|--------|-----------|-------------|
-| health | ✅ | ❌ | ❌ |
-| science | ✅ | ✅ | ❌ |
-| politics | ❌ | ✅ | ✅ |
-| news | ❌ | ✅ | ✅ |
-| finance | ❌ | ✅ | ✅ |
-| technology | ❌ | ✅ | ❌ |
-| general / other | ❌ | ✅ | ❌ |
+### Step 1 — Transcript Collection
 
-**News results never contribute confidence for health or science claims.**
+Captions are collected while the user watches the Short.
+
+No verification occurs immediately.
+
+This prevents incomplete narratives from being analyzed.
 
 ---
 
-## Confidence Scoring
+### Step 2 — Watch Completion Gate
 
-### Retrieval Confidence (`computeRetrieval`)
+Verification begins only when:
 
-Computed BEFORE any LLM call. Determines whether LLM is needed at all.
+* the video finishes, or
+* the user watches at least 80–90% of the Short
 
-| Source | Max Points | Condition |
-|--------|-----------|-----------|
-| FactCheck (Jaccard-scaled) | 45 | Category ≠ health |
-| PubMed papers (×15 each, max 3) | 45 | health or science only |
-| Unique news sources (×10, max 3) | 30 | politics / news / finance only |
-| Numeric claim specificity | +5 | Contains %, mg, billion, etc. |
-| Cross-source agreement | +8 | ≥ 2 source types returned |
-
-**Threshold: ≥ 60 → local synthesis (no LLM). < 60 → optional LLM escalation.**
-
-### Final Confidence (`compute`)
-
-Post-synthesis scoring for UI display metrics:
-
-- **Scientific Support**: Strong / Moderate / Weak / None / N/A
-- **Evidence Strength**: Strong / Moderate / Weak
-- **Manipulation Risk**: Low / Moderate / High
-- **Confidence %**: Clamped 30–95
+This ensures the narrative is complete before analysis begins.
 
 ---
 
-## LLM Escalation Logic
+### Step 3 — Transcript Stabilization
 
-```
-if retrievalConfidence >= 60 OR hasEvidence:
-    → Local synthesis (free, instant)
+The Transcript Stabilizer removes:
 
-elif retrievalConfidence < 60 AND no evidence:
-    if geminiApiKey configured:
-        → Try Gemini synthesis
-        if Gemini fails:
-            → Local synthesis fallback
-    else:
-        → Local synthesis fallback
+* duplicate caption updates
+* partial caption fragments
+* rapidly changing intermediate text
 
-    if finalConfidence < 60 AND openRouterApiKey configured:
-        → Try OpenRouter as last resort
-```
+Result:
 
-**The extension always produces a result.** No API key is ever required.
+A stable transcript representing the full video.
 
 ---
 
-## API Usage Policy
+### Step 4 — Narrative Engine
 
-| Scenario | APIs Called |
-|----------|------------|
-| Cache hit (video ID) | **None** |
-| Cache hit (claim hash) | **None** |
-| No claim signals | **None** |
-| Non-verifiable claim filtered | **None** |
-| Health claim, high retrieval confidence | PubMed only |
-| Science claim, high retrieval confidence | PubMed + FactCheck |
-| Politics/news claim, high retrieval confidence | FactCheck + News RSS |
-| Low confidence, Gemini configured | + Gemini synthesis |
-| Low confidence, OpenRouter configured | + OpenRouter (last resort) |
+The Narrative Engine transforms the transcript into a narrative representation.
 
----
+Example:
 
-## Setup
+Transcript:
 
-### Required
-Nothing. The extension functions in retrieval-only mode.
+"Leaky gut causes eczema and rosacea. Ghee repairs the gut lining."
 
-### Optional (improves synthesis quality)
-1. **Gemini API Key** — enables natural language synthesis for difficult claims
-2. **OpenRouter API Key** — last-resort LLM for very low confidence cases
+Narrative Representation:
 
-Both keys are stored in `chrome.storage.local`. Configure via the extension popup.
+"The creator argues that gut dysfunction causes skin disease and that dietary interventions such as ghee can restore gut health."
+
+The system analyzes meaning rather than isolated keywords.
 
 ---
 
-## Cost Optimization
+### Step 5 — Narrative Cache
 
-- **~70–90% token reduction** via local claim extraction before any LLM call
-- **Cross-video cache deduplication** means repeated claims cost nothing after first analysis
-- **Smart retrieval routing** — never queries all 3 sources; only the relevant ones
-- **Watch-time gate** prevents analysis of videos the user immediately swipes past
-- **Verifiability filter** blocks CTAs and opinions from ever reaching retrieval APIs
+Before retrieval, CredLens checks whether this narrative has already been analyzed.
+
+Cache stores:
+
+* video ID
+* narrative fingerprint
+* evidence bundle
+* verdict
+
+If a match exists:
+
+Retrieval is skipped.
+
+Results are returned instantly.
 
 ---
 
-## Architecture Files
+### Step 6 — Evidence Retrieval
 
-```
-src/
-├── background/
-│   ├── index.ts          ← Pipeline orchestrator
-│   └── queueManager.ts   ← AbortController-based cancellation
-├── content/
-│   └── index.tsx         ← Caption observer + Shadow DOM overlay
-├── components/
-│   └── CredibilityOverlay.tsx
-├── services/
-│   ├── cacheService.ts       ← 3-tier cache (L1/L2/L3)
-│   ├── factCheckService.ts   ← Google Fact Check Tools API
-│   ├── healthService.ts      ← PubMed / NIH search
-│   ├── newsService.ts        ← Google News RSS
-│   ├── openRouterService.ts  ← OpenRouter (last resort)
-│   ├── geminiService.ts      ← Gemini synthesis (optional)
-│   └── retrievalEngine.ts    ← Smart category-aware routing
-├── utils/
-│   ├── captionExtractor.ts     ← YouTube caption DOM observer
-│   ├── transcriptFilter.ts     ← Pre-filter (music, filler, emoji)
-│   ├── claimFilter.ts          ← Claim signal detection
-│   ├── claimExtractor.ts       ← Sentence-level claim extraction
-│   ├── verifiabilityFilter.ts  ← Rejects CTAs/opinions (Phase 5)
-│   ├── claimClassifier.ts      ← Local keyword classifier
-│   ├── claimRouter.ts          ← Category → source routing
-│   ├── confidenceScorer.ts     ← Retrieval + final confidence scoring
-│   ├── escalationManager.ts    ← Optional LLM last-resort gating
-│   └── retryUtils.ts           ← Shared retry-with-delay utility
-└── types/
-    └── index.ts
-```
+Retrieval is driven by the narrative, not by sentence fragments.
+
+Sources:
+
+* PubMed
+* Google Fact Check
+* Google News RSS
+
+Goal:
+
+Find evidence relevant to the narrative as a whole.
+
+---
+
+### Step 7 — Verdict Builder
+
+The Verdict Builder compares:
+
+Narrative
+vs
+Retrieved Evidence
+
+Possible outcomes:
+
+* Supported by evidence
+* Partially supported
+* Evidence is mixed
+* Not supported by evidence
+* Exaggerated claim
+
+Verdicts are generated locally whenever possible.
+
+---
+
+### Step 8 — Fallback AI
+
+Gemini and OpenRouter are optional.
+
+They are used only when:
+
+* evidence confidence is extremely low
+* retrieved sources conflict heavily
+* a local verdict cannot be generated
+
+Normal operation should not depend on either service.
+
+---
+
+## Caching Strategy
+
+### Local Cache
+
+Stores results on-device.
+
+Used for:
+
+* repeated views
+* browser refreshes
+* revisiting Shorts
+
+### Future Global Cache
+
+Planned Phase 2 feature.
+
+Allows identical Shorts watched on different devices to reuse previously generated narrative verdicts.
+
+---
+
+## Core Components
+
+* transcriptStabilizer.ts
+* semanticEmbedder.ts
+* narrativeEngine.ts
+* retrievalEngine.ts
+* verdictBuilder.ts
+* cacheService.ts
+
+---
+
+## Current Phase Limitations
+
+Phase 1 focuses on:
+
+* narrative representation
+* retrieval-first verification
+* local caching
+* evidence-driven verdicts
+
+Future phases will improve:
+
+* semantic contradiction detection
+* cross-video narrative clustering
+* global narrative caching
+* narrative reasoning accuracy

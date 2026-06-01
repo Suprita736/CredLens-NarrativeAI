@@ -1,118 +1,118 @@
-import type { ClaimAnalysis } from "../types";
+// src/services/cacheService.ts — CredLens NarrativeAI Phase 1
+//
+// Semantic narrative cache.
+// Stores: embedding + verdict + evidence bundle.
+//
+// Before retrieval: generate embedding → compare against cached embeddings
+// using cosine similarity → if similarity exceeds threshold, reuse cached
+// verdict and evidence, skip retrieval, skip AI.
+//
+// Goal: 100 videos → reuse previous narrative analyses whenever possible.
 
-export interface CachedEntry {
-  data: ClaimAnalysis;
-  timestamp: number;
-}
+import type { NarrativeAnalysis, NarrativeCacheEntry, EvidenceBundle, EmbeddingVector } from '../types';
+import { cosineSimilarity } from '../utils/semanticEmbedder';
 
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
-const CACHE_PREFIX_VIDEO = "credlens_cache_";
-const CACHE_PREFIX_CLAIM = "credlens_claim_cache_";
-const MAX_L1_ENTRIES = 30;
-const DB_NAME = "credlens-db";
+const CACHE_PREFIX_VIDEO = 'credlens_narrative_';
+const MAX_L1_ENTRIES = 50;
+const DB_NAME = 'credlens-narrative-db';
 const DB_VERSION = 1;
-const STORE_NAME = "cache";
+const STORE_NAME = 'narratives';
+
+// Semantic similarity threshold for cache hits
+const SIMILARITY_THRESHOLD = 0.85;
 
 export class CacheService {
-  // L1 Cache: In-memory Map
-  private static l1Cache = new Map<string, CachedEntry>();
+  // L1 Cache: In-memory
+  private static l1Cache = new Map<string, NarrativeCacheEntry>();
 
-  // IndexedDB initialization helper
+  // ── IndexedDB helpers ──────────────────────────────────────────────────────
+
   private static openDB(): Promise<IDBDatabase> {
     return new Promise((resolve, reject) => {
       const request = indexedDB.open(DB_NAME, DB_VERSION);
-
       request.onupgradeneeded = () => {
         const db = request.result;
         if (!db.objectStoreNames.contains(STORE_NAME)) {
           db.createObjectStore(STORE_NAME);
         }
       };
-
-      request.onsuccess = () => {
-        resolve(request.result);
-      };
-
-      request.onerror = () => {
-        reject(request.error);
-      };
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
     });
   }
 
-  /**
-   * Computes a standard SHA-256 hash of a claim to perform duplicate cross-video caching.
-   */
-  static async computeClaimHash(claim: string): Promise<string> {
-    const msgBuffer = new TextEncoder().encode(claim.trim().toLowerCase());
-    const hashBuffer = await crypto.subtle.digest("SHA-256", msgBuffer);
-    const hashArray = Array.from(new Uint8Array(hashBuffer));
-    return hashArray.map((b) => b.toString(16).padStart(2, "0")).join("");
-  }
-
-  /**
-   * Get item from IndexedDB (L3)
-   */
-  private static async getL3(key: string): Promise<CachedEntry | null> {
+  private static async getFromDB(key: string): Promise<NarrativeCacheEntry | null> {
     try {
       const db = await this.openDB();
       return new Promise((resolve) => {
-        const transaction = db.transaction(STORE_NAME, "readonly");
-        const store = transaction.objectStore(STORE_NAME);
+        const tx = db.transaction(STORE_NAME, 'readonly');
+        const store = tx.objectStore(STORE_NAME);
         const request = store.get(key);
-
-        request.onsuccess = () => {
-          resolve(request.result || null);
-        };
-        request.onerror = () => {
-          resolve(null);
-        };
+        request.onsuccess = () => resolve(request.result || null);
+        request.onerror = () => resolve(null);
       });
-    } catch (err) {
-      console.warn("[CacheService] IndexedDB read failed, falling back:", err);
+    } catch {
       return null;
     }
   }
 
-  /**
-   * Set item in IndexedDB (L3)
-   */
-  private static async setL3(key: string, entry: CachedEntry): Promise<void> {
+  private static async setInDB(key: string, entry: NarrativeCacheEntry): Promise<void> {
     try {
       const db = await this.openDB();
       return new Promise((resolve, reject) => {
-        const transaction = db.transaction(STORE_NAME, "readwrite");
-        const store = transaction.objectStore(STORE_NAME);
+        const tx = db.transaction(STORE_NAME, 'readwrite');
+        const store = tx.objectStore(STORE_NAME);
         const request = store.put(entry, key);
-
         request.onsuccess = () => resolve();
         request.onerror = () => reject(request.error);
       });
     } catch (err) {
-      console.warn("[CacheService] IndexedDB write failed:", err);
+      console.warn('[CacheService] IndexedDB write failed:', err);
     }
   }
 
-  /**
-   * Remove item from IndexedDB (L3)
-   */
-  private static async removeL3(key: string): Promise<void> {
+  private static async removeFromDB(key: string): Promise<void> {
     try {
       const db = await this.openDB();
       return new Promise((resolve) => {
-        const transaction = db.transaction(STORE_NAME, "readwrite");
-        const store = transaction.objectStore(STORE_NAME);
+        const tx = db.transaction(STORE_NAME, 'readwrite');
+        const store = tx.objectStore(STORE_NAME);
         const request = store.delete(key);
         request.onsuccess = () => resolve();
         request.onerror = () => resolve();
       });
-    } catch (err) {
-      console.warn("[CacheService] IndexedDB remove failed:", err);
+    } catch {
+      // swallow
     }
   }
 
-  /**
-   * Prunes oldest L1 items to maintain max L1 entries.
-   */
+  private static async getAllFromDB(): Promise<{ key: string; entry: NarrativeCacheEntry }[]> {
+    try {
+      const db = await this.openDB();
+      return new Promise((resolve) => {
+        const tx = db.transaction(STORE_NAME, 'readonly');
+        const store = tx.objectStore(STORE_NAME);
+        const results: { key: string; entry: NarrativeCacheEntry }[] = [];
+        const request = store.openCursor();
+        request.onsuccess = (event) => {
+          const cursor = (event.target as any).result;
+          if (cursor) {
+            results.push({ key: cursor.key as string, entry: cursor.value });
+            cursor.continue();
+          } else {
+            resolve(results);
+          }
+        };
+        request.onerror = () => resolve([]);
+      });
+    } catch {
+      return [];
+    }
+  }
+
+  // ── L1 management ──────────────────────────────────────────────────────────
+
   private static maintainL1Limit(): void {
     if (this.l1Cache.size > MAX_L1_ENTRIES) {
       const firstKey = this.l1Cache.keys().next().value;
@@ -122,189 +122,186 @@ export class CacheService {
     }
   }
 
+  // ── Video ID lookup ────────────────────────────────────────────────────────
+
   /**
-   * High-speed, tiered cache lookup: L1 -> L2 -> L3.
+   * Look up cache by video ID.
    */
-  static async get(videoId: string): Promise<ClaimAnalysis | null> {
+  static async getByVideoId(videoId: string): Promise<NarrativeAnalysis | null> {
     const key = `${CACHE_PREFIX_VIDEO}${videoId}`;
-    return this.getByKey(key);
-  }
-
-  /**
-   * Lookup cache by claim hash.
-   */
-  static async getByClaimHash(hash: string): Promise<ClaimAnalysis | null> {
-    const key = `${CACHE_PREFIX_CLAIM}${hash}`;
-    return this.getByKey(key);
-  }
-
-  /**
-   * Generic lookup key and populates higher tiers if found in lower tiers.
-   */
-  private static async getByKey(key: string): Promise<ClaimAnalysis | null> {
     const now = Date.now();
 
-    // 1. Tier 1: In-memory L1
-    const l1Entry = this.l1Cache.get(key);
-    if (l1Entry) {
-      if (now - l1Entry.timestamp < CACHE_TTL_MS) {
-        console.log(`[CacheService] L1 (Memory) Hit: ${key}`);
-        // Refresh position in Map for LRU
-        this.l1Cache.delete(key);
-        this.l1Cache.set(key, l1Entry);
-        return l1Entry.data;
-      } else {
-        console.log(`[CacheService] L1 Expired: ${key}`);
-        this.l1Cache.delete(key);
-      }
+    // L1
+    const l1 = this.l1Cache.get(key);
+    if (l1 && now - l1.timestamp < CACHE_TTL_MS) {
+      console.log(`[CacheService] L1 Hit: ${videoId}`);
+      return l1.analysis;
     }
 
-    // 2. Tier 2: chrome.storage.local L2
+    // L2 (chrome.storage)
     try {
-      const cached = await chrome.storage.local.get([key]);
-      const l2Entry = cached[key] as CachedEntry | undefined;
-      if (l2Entry) {
-        if (now - l2Entry.timestamp < CACHE_TTL_MS) {
-          console.log(`[CacheService] L2 (chrome.storage) Hit: ${key}`);
-          // Populate L1
-          this.l1Cache.set(key, l2Entry);
-          this.maintainL1Limit();
-          return l2Entry.data;
-        } else {
-          console.log(`[CacheService] L2 Expired: ${key}`);
-          await chrome.storage.local.remove(key);
-        }
+      const result = await chrome.storage.local.get([key]);
+      const entry = result[key] as NarrativeCacheEntry | undefined;
+      if (entry && now - entry.timestamp < CACHE_TTL_MS) {
+        console.log(`[CacheService] L2 Hit: ${videoId}`);
+        this.l1Cache.set(key, entry);
+        this.maintainL1Limit();
+        return entry.analysis;
       }
-    } catch (err) {
-      console.warn("[CacheService] L2 lookup failed:", err);
+    } catch {
+      // swallow
     }
 
-    // 3. Tier 3: IndexedDB L3
-    const l3Entry = await this.getL3(key);
-    if (l3Entry) {
-      if (now - l3Entry.timestamp < CACHE_TTL_MS) {
-        console.log(`[CacheService] L3 (IndexedDB) Hit: ${key}`);
-        // Populate L1 & L2
-        this.l1Cache.set(key, l3Entry);
-        this.maintainL1Limit();
-        try {
-          await chrome.storage.local.set({ [key]: l3Entry });
-        } catch (err) {
-          console.warn("[CacheService] L2 populate failed:", err);
-        }
-        return l3Entry.data;
-      } else {
-        console.log(`[CacheService] L3 Expired: ${key}`);
-        await this.removeL3(key);
-      }
+    // L3 (IndexedDB)
+    const l3 = await this.getFromDB(key);
+    if (l3 && now - l3.timestamp < CACHE_TTL_MS) {
+      console.log(`[CacheService] L3 Hit: ${videoId}`);
+      this.l1Cache.set(key, l3);
+      this.maintainL1Limit();
+      return l3.analysis;
     }
 
     return null;
   }
 
+  // ── Semantic similarity lookup ─────────────────────────────────────────────
+
   /**
-   * Caches results in all three tiers.
+   * Search for a semantically similar narrative in the cache.
+   * Compares the embedding against all cached embeddings using cosine similarity.
+   *
+   * Returns the cached analysis if similarity > SIMILARITY_THRESHOLD.
+   * This enables reuse across different videos with similar narratives.
+   */
+  static async findSimilarNarrative(
+    embedding: EmbeddingVector
+  ): Promise<NarrativeAnalysis | null> {
+    // Check if embedding is valid (not a zero vector)
+    if (embedding.every(v => v === 0)) return null;
+
+    const now = Date.now();
+    let bestMatch: NarrativeCacheEntry | null = null;
+    let bestSimilarity = 0;
+
+    // Search L1 first (fast)
+    for (const [, entry] of this.l1Cache) {
+      if (now - entry.timestamp > CACHE_TTL_MS) continue;
+      if (!entry.embedding || entry.embedding.length === 0) continue;
+
+      const sim = cosineSimilarity(embedding, entry.embedding);
+      if (sim > bestSimilarity) {
+        bestSimilarity = sim;
+        bestMatch = entry;
+      }
+    }
+
+    // If L1 didn't find a good match, search L3 (IndexedDB)
+    if (bestSimilarity < SIMILARITY_THRESHOLD) {
+      const allEntries = await this.getAllFromDB();
+      for (const { entry } of allEntries) {
+        if (now - entry.timestamp > CACHE_TTL_MS) continue;
+        if (!entry.embedding || entry.embedding.length === 0) continue;
+
+        const sim = cosineSimilarity(embedding, entry.embedding);
+        if (sim > bestSimilarity) {
+          bestSimilarity = sim;
+          bestMatch = entry;
+        }
+      }
+    }
+
+    if (bestMatch && bestSimilarity >= SIMILARITY_THRESHOLD) {
+      console.log(
+        `[CacheService] Semantic cache hit! Similarity: ${bestSimilarity.toFixed(3)} >= ${SIMILARITY_THRESHOLD}`
+      );
+      return bestMatch.analysis;
+    }
+
+    return null;
+  }
+
+  // ── Store ──────────────────────────────────────────────────────────────────
+
+  /**
+   * Cache a narrative analysis result with its embedding and evidence.
    */
   static async set(
     videoId: string,
-    claimHash: string | null,
-    data: ClaimAnalysis
+    embedding: EmbeddingVector,
+    analysis: NarrativeAnalysis,
+    evidence: EvidenceBundle
   ): Promise<void> {
-    const timestamp = Date.now();
-    const entry: CachedEntry = { data, timestamp };
+    const key = `${CACHE_PREFIX_VIDEO}${videoId}`;
+    const entry: NarrativeCacheEntry = {
+      embedding,
+      analysis,
+      evidence,
+      timestamp: Date.now(),
+    };
 
-    const videoKey = `${CACHE_PREFIX_VIDEO}${videoId}`;
-    const claimKey = claimHash ? `${CACHE_PREFIX_CLAIM}${claimHash}` : null;
-
-    // Write to L1
-    this.l1Cache.set(videoKey, entry);
+    // L1
+    this.l1Cache.set(key, entry);
     this.maintainL1Limit();
-    if (claimKey) {
-      this.l1Cache.set(claimKey, entry);
-      this.maintainL1Limit();
-    }
 
-    // Write to L2
+    // L2
     try {
-      const storageObj: { [key: string]: CachedEntry } = { [videoKey]: entry };
-      if (claimKey) {
-        storageObj[claimKey] = entry;
-      }
-      await chrome.storage.local.set(storageObj);
+      await chrome.storage.local.set({ [key]: entry });
     } catch (err) {
-      console.warn("[CacheService] L2 write failed:", err);
+      console.warn('[CacheService] L2 write failed:', err);
     }
 
-    // Write to L3
-    await this.setL3(videoKey, entry);
-    if (claimKey) {
-      await this.setL3(claimKey, entry);
-    }
+    // L3
+    await this.setInDB(key, entry);
 
-    console.log(
-      `[CacheService] Successfully cached results for videoId: ${videoId}` +
-      (claimHash ? ` & claimHash: ${claimHash.slice(0, 12)}…` : "")
-    );
+    console.log(`[CacheService] Cached narrative for ${videoId}`);
   }
 
+  // ── Prune ──────────────────────────────────────────────────────────────────
+
   /**
-   * Prunes expired cache entries across L2 and L3.
+   * Remove expired entries from all tiers.
    */
   static async prune(): Promise<void> {
     const now = Date.now();
-    console.log("[CacheService] Starting cache prune process...");
+    console.log('[CacheService] Starting cache prune...');
 
-    // Prune L1
+    // L1
     for (const [key, entry] of this.l1Cache.entries()) {
       if (now - entry.timestamp > CACHE_TTL_MS) {
         this.l1Cache.delete(key);
       }
     }
 
-    // Prune L2 (chrome.storage)
+    // L2
     try {
       const all = await chrome.storage.local.get(null);
-      const toDeleteL2: string[] = [];
-      const validL2: { key: string; timestamp: number }[] = [];
-
+      const toDelete: string[] = [];
       for (const key of Object.keys(all)) {
-        if (key.startsWith(CACHE_PREFIX_VIDEO) || key.startsWith(CACHE_PREFIX_CLAIM)) {
-          const entry = all[key] as CachedEntry | undefined;
+        if (key.startsWith(CACHE_PREFIX_VIDEO)) {
+          const entry = all[key] as NarrativeCacheEntry | undefined;
           if (!entry || !entry.timestamp || now - entry.timestamp > CACHE_TTL_MS) {
-            toDeleteL2.push(key);
-          } else {
-            validL2.push({ key, timestamp: entry.timestamp });
+            toDelete.push(key);
           }
         }
       }
-
-      if (toDeleteL2.length > 0) {
-        await chrome.storage.local.remove(toDeleteL2);
-        console.log(`[CacheService] L2 pruned ${toDeleteL2.length} entries.`);
+      if (toDelete.length > 0) {
+        await chrome.storage.local.remove(toDelete);
+        console.log(`[CacheService] L2 pruned ${toDelete.length} entries.`);
       }
-    } catch (err) {
-      console.warn("[CacheService] L2 pruning failed:", err);
+    } catch {
+      // swallow
     }
 
-    // Prune L3 (IndexedDB)
+    // L3
     try {
-      const db = await this.openDB();
-      const transaction = db.transaction(STORE_NAME, "readwrite");
-      const store = transaction.objectStore(STORE_NAME);
-      const request = store.openCursor();
-
-      request.onsuccess = (event) => {
-        const cursor = (event.target as any).result;
-        if (cursor) {
-          const entry = cursor.value as CachedEntry;
-          if (now - entry.timestamp > CACHE_TTL_MS) {
-            cursor.delete();
-          }
-          cursor.continue();
+      const allEntries = await this.getAllFromDB();
+      for (const { key, entry } of allEntries) {
+        if (now - entry.timestamp > CACHE_TTL_MS) {
+          await this.removeFromDB(key);
         }
-      };
-    } catch (err) {
-      console.warn("[CacheService] L3 pruning failed:", err);
+      }
+    } catch {
+      // swallow
     }
   }
 }

@@ -1,4 +1,46 @@
+// src/types/index.ts — CredLens NarrativeAI Phase 1
+
+// ── Narrative-level types ──────────────────────────────────────────────────────
+
 export type CredibilityLevel = 'low' | 'medium' | 'high' | 'none';
+
+/** A narrative verdict generated from evidence analysis. */
+export type NarrativeVerdict =
+  | 'Supported by evidence'
+  | 'Evidence is mixed'
+  | 'Not supported by evidence'
+  | 'Exaggerated claim'
+  | 'Insufficient evidence'
+  | 'Satirical / Entertainment'
+  | 'No verifiable claims detected';
+
+/** Semantic embedding vector (Float32). */
+export type EmbeddingVector = number[];
+
+/** A single theme extracted from a narrative. */
+export interface NarrativeTheme {
+  summary: string;
+  embedding: EmbeddingVector;
+}
+
+/**
+ * Full narrative representation computed from a transcript.
+ * Replaces the old per-claim extraction model.
+ */
+export interface NarrativeRepresentation {
+  /** Original transcript text. */
+  transcript: string;
+  /** Semantic embedding of the entire narrative. */
+  embedding: EmbeddingVector;
+  /** Key themes within the narrative. */
+  themes: NarrativeTheme[];
+  /** Generated retrieval query derived from narrative meaning. */
+  retrievalQuery: string;
+  /** Timestamp of creation. */
+  timestamp: number;
+}
+
+// ── Evidence types (kept from Phase 5) ─────────────────────────────────────────
 
 export interface FactCheckReview {
   publisher: string;
@@ -26,12 +68,6 @@ export interface ResearchArticle {
   id: string;
 }
 
-export interface HealthVerificationResult {
-  status: 'Scientifically supported' | 'Limited evidence' | 'No credible evidence found' | 'Contradictory evidence exists';
-  summary: string;
-  sources: ResearchArticle[];
-}
-
 export interface NewsArticle {
   title: string;
   source: string;
@@ -39,49 +75,64 @@ export interface NewsArticle {
   date: string;
 }
 
-export interface NewsVerificationResult {
-  status: 'Widely reported' | 'Partially verified' | 'No trusted reporting found' | 'Conflicting reports';
-  summary: string;
-  sources: NewsArticle[];
+export interface EvidenceBundle {
+  factCheck?: FactCheckResult | null;
+  healthResearch?: ResearchArticle[];
+  newsArticles?: NewsArticle[];
 }
 
-export interface ClaimAnalysis {
-  containsClaim: boolean;
-  claim?: string;
-  category?: 'health' | 'science' | 'politics' | 'finance' | 'news' | 'other' | null;
+// ── Narrative Analysis (replaces ClaimAnalysis) ────────────────────────────────
+
+export interface NarrativeAnalysis {
+  /** Whether the transcript contains verifiable claims. */
+  containsClaims: boolean;
+  /** The overall narrative verdict. */
+  verdict: NarrativeVerdict;
+  /** Credibility level. */
+  credibility: CredibilityLevel;
+  /** Confidence score 0–100. */
+  confidence: number;
+  /** Human-readable narrative summary / explanation. */
+  explanation: string;
+  /** Additional context for the user. */
+  context?: string;
+  /** The retrieval query used. */
+  retrievalQuery?: string;
+  /** Whether this is satirical or entertainment content. */
   isSatire: boolean;
-  reasoning?: string;
-  
-  // Verification Results
-  verdict?: string; // e.g., "Mostly False", "Partially verified", "Scientifically supported"
-  credibility?: CredibilityLevel;
-  confidence?: number;
-  explanation?: string; // soft correction summary
-  alternativeExplanation?: string;
-  sourceName?: string;
-  sourceUrl?: string;
-  
+
   // Rich evidence sub-blocks
   factCheck?: FactCheckResult | null;
-  healthResearch?: HealthVerificationResult | null;
-  newsVerification?: NewsVerificationResult | null;
+  healthResearch?: { status: string; summary: string; sources: ResearchArticle[] } | null;
+  newsVerification?: { status: string; summary: string; sources: NewsArticle[] } | null;
 
-  // Confidence scoring breakdown
+  // Confidence breakdown
   scientificSupport?: 'Strong' | 'Moderate' | 'Weak' | 'None' | 'N/A';
   manipulationRisk?: 'High' | 'Moderate' | 'Low';
   evidenceStrength?: 'Strong' | 'Moderate' | 'Weak';
+
+  // Source attribution
+  sourceName?: string;
+  sourceUrl?: string;
 }
+
+// ── Semantic Cache Entry ───────────────────────────────────────────────────────
+
+export interface NarrativeCacheEntry {
+  embedding: EmbeddingVector;
+  analysis: NarrativeAnalysis;
+  evidence: EvidenceBundle;
+  timestamp: number;
+}
+
+// ── Extension Messaging ────────────────────────────────────────────────────────
 
 export interface VideoState {
   videoId: string;
   viewTime: number;
   processed: boolean;
   status?: 'loading' | 'completed' | 'error';
-  analysis?: ClaimAnalysis;
-}
-
-export interface Settings {
-  geminiApiKey: string;
+  analysis?: NarrativeAnalysis;
 }
 
 export interface BackgroundMessage {
@@ -93,34 +144,22 @@ export interface BackgroundMessage {
 export interface BackgroundResponse {
   status: 'loading' | 'completed' | 'error';
   videoId: string;
-  analysis?: ClaimAnalysis;
+  analysis?: NarrativeAnalysis;
   error?: string;
 }
 
-export interface EvidenceBundle {
-  factCheck?: FactCheckResult | null;
-  healthResearch?: ResearchArticle[];
-  newsArticles?: NewsArticle[];
-}
+// ── Extension Settings ─────────────────────────────────────────────────────────
 
-/**
- * Abstract interface for AI providers (Gemini, OpenRouter, etc.)
- * Both are optional — the extension functions without either.
- */
-export interface AIProvider {
-  analyzeClaim(
-    claim: string,
-    evidence?: {
-      factCheck?: FactCheckResult | null;
-      healthResearch?: ResearchArticle[];
-      newsArticles?: NewsArticle[];
-    }
-  ): Promise<ClaimAnalysis>;
-}
-
-/** Settings stored in chrome.storage.local */
 export interface ExtensionSettings {
   geminiApiKey?: string;
   openRouterApiKey?: string;
 }
 
+// ── AI Provider (fallback only) ────────────────────────────────────────────────
+
+export interface AIProvider {
+  analyzeNarrative(
+    narrative: string,
+    evidence?: EvidenceBundle
+  ): Promise<NarrativeAnalysis>;
+}

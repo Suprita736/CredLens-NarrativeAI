@@ -1,15 +1,13 @@
-// src/services/openRouterService.ts
+// src/services/openRouterService.ts — CredLens NarrativeAI Phase 1
+//
+// OpenRouter fallback provider. Only used when evidence confidence
+// is extremely low AND API key is configured.
 
-import type { AIProvider, ClaimAnalysis, EvidenceBundle } from "../types";
+import type { AIProvider, NarrativeAnalysis, EvidenceBundle } from '../types';
 
-/**
- * OpenRouterProvider implements AIProvider using the OpenRouter API.
- * It follows the same contract as other providers (Gemini, etc.)
- * and returns a ClaimAnalysis object.
- */
 export class OpenRouterProvider implements AIProvider {
-  private readonly endpoint = "https://openrouter.ai/api/v1/chat/completions";
-  private readonly model = "openai/gpt-4o-mini"; // default model, can be switched via config later
+  private readonly endpoint = 'https://openrouter.ai/api/v1/chat/completions';
+  private readonly model = 'openai/gpt-4o-mini';
   private readonly timeoutMs = 8000;
   private apiKey: string;
 
@@ -17,38 +15,32 @@ export class OpenRouterProvider implements AIProvider {
     this.apiKey = apiKey;
   }
 
-  async analyzeClaim(
-    claim: string,
+  async analyzeNarrative(
+    narrative: string,
     evidence?: EvidenceBundle
-  ): Promise<ClaimAnalysis> {
-    // Build minimal payload according to token optimization rules
+  ): Promise<NarrativeAnalysis> {
     const messages = [
       {
-        role: "system",
+        role: 'system',
         content:
-          "You are an expert fact‑checker. Provide a concise verification of the given claim. Use only the supplied evidence. Respond with a JSON object matching the ClaimAnalysis interface.",
+          'You are an expert fact-checker. Analyze the overall narrative and provide a verification result. Use only the supplied evidence. Be educational and neutral. Respond with a JSON object.',
       },
       {
-        role: "user",
-        content: this.buildUserContent(claim, evidence),
+        role: 'user',
+        content: this.buildPrompt(narrative, evidence),
       },
     ];
-
-    const body = {
-      model: this.model,
-      messages,
-    };
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
 
     const response = await fetch(this.endpoint, {
-      method: "POST",
+      method: 'POST',
       headers: {
-        "Content-Type": "application/json",
+        'Content-Type': 'application/json',
         Authorization: `Bearer ${this.apiKey}`,
       },
-      body: JSON.stringify(body),
+      body: JSON.stringify({ model: this.model, messages }),
       signal: controller.signal,
     });
 
@@ -60,39 +52,34 @@ export class OpenRouterProvider implements AIProvider {
     }
 
     const data = await response.json();
-    // Assuming the model returns a JSON string in the first choice
     const content = data.choices?.[0]?.message?.content;
     if (!content) {
-      throw new Error("OpenRouter returned empty content");
+      throw new Error('OpenRouter returned empty content');
     }
-    // Try to parse JSON; fallback to a minimal analysis if parsing fails
+
     try {
-      const parsed: ClaimAnalysis = JSON.parse(content);
-      return parsed;
+      return JSON.parse(content) as NarrativeAnalysis;
     } catch {
-      // Fallback: create a basic analysis object
       return {
-        containsClaim: true,
+        containsClaims: true,
         isSatire: false,
-        claim,
-        reasoning: "OpenRouter could not parse structured response; returning basic verdict.",
-        verdict: "Unable to verify",
-        credibility: "low",
-        confidence: 0,
-      } as ClaimAnalysis;
+        verdict: 'Evidence is mixed',
+        credibility: 'medium',
+        confidence: 40,
+        explanation: 'OpenRouter analysis could not be parsed; using evidence-based assessment.',
+      };
     }
   }
 
-  private buildUserContent(claim: string, evidence?: EvidenceBundle): string {
-    let payload = `Claim: "${claim}"\n`;
+  private buildPrompt(narrative: string, evidence?: EvidenceBundle): string {
+    let prompt = `Narrative: "${narrative.slice(0, 500)}"\n`;
     if (evidence) {
-      payload += "Evidence:\n";
-      if (evidence.factCheck) payload += `FactCheck: ${JSON.stringify(evidence.factCheck)}\n`;
-      if (evidence.healthResearch) payload += `Health: ${JSON.stringify(evidence.healthResearch)}\n`;
-      if (evidence.newsArticles) payload += `News: ${JSON.stringify(evidence.newsArticles)}\n`;
+      prompt += 'Evidence:\n';
+      if (evidence.factCheck) prompt += `FactCheck: ${JSON.stringify(evidence.factCheck)}\n`;
+      if (evidence.healthResearch) prompt += `Health: ${JSON.stringify(evidence.healthResearch)}\n`;
+      if (evidence.newsArticles) prompt += `News: ${JSON.stringify(evidence.newsArticles)}\n`;
     }
-    payload += "\nProvide a concise verification result in JSON format matching the ClaimAnalysis type.";
-    return payload;
+    prompt += '\nProvide a concise narrative verification result in JSON format.';
+    return prompt;
   }
 }
-

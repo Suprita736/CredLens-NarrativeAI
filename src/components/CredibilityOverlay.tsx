@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import type { ClaimAnalysis } from "../types";
+import type { NarrativeAnalysis, ResearchArticle, NewsArticle } from "../types";
 import {
   Shield,
   ShieldAlert,
@@ -15,7 +15,7 @@ import {
 } from "lucide-react";
 
 interface Props {
-  analysis: ClaimAnalysis;
+  analysis: NarrativeAnalysis;
   onClose: () => void;
 }
 
@@ -139,11 +139,7 @@ const CredibilityOverlay: React.FC<Props> = ({ analysis, onClose }) => {
             </div>
             
             <div className="flex items-center gap-1">
-              {analysis.category && (
-                <span className="text-[9px] px-2 py-0.5 rounded-full bg-slate-900 border border-slate-800 text-slate-400 font-semibold uppercase tracking-wider">
-                  {analysis.category}
-                </span>
-              )}
+
               <button
                 onClick={onClose}
                 className="p-1 hover:bg-slate-900 rounded-full transition-colors text-slate-400 hover:text-white"
@@ -154,13 +150,13 @@ const CredibilityOverlay: React.FC<Props> = ({ analysis, onClose }) => {
           </div>
 
           {/* Factual Claim Detected */}
-          {analysis.claim && (
+          {analysis.retrievalQuery && (
             <div className="mb-4 bg-slate-900/50 border border-slate-900 p-3 rounded-xl">
               <span className="text-[9px] uppercase tracking-wider font-bold text-slate-500">
-                Detected Statement
+                Narrative Focus
               </span>
               <p className="text-xs text-slate-300 mt-1 italic font-medium leading-relaxed">
-                "{analysis.claim}"
+                "{analysis.retrievalQuery}"
               </p>
             </div>
           )}
@@ -263,13 +259,13 @@ const CredibilityOverlay: React.FC<Props> = ({ analysis, onClose }) => {
               </p>
             </div>
 
-            {analysis.alternativeExplanation && (
+            {analysis.context && (
               <div className="pt-1.5 border-t border-slate-900">
                 <span className="text-[9px] uppercase tracking-wider font-bold text-slate-500">
-                  Safer Context
+                  Context
                 </span>
                 <p className="text-xs text-slate-400 mt-1 leading-relaxed">
-                  {analysis.alternativeExplanation}
+                  {analysis.context}
                 </p>
               </div>
             )}
@@ -307,7 +303,7 @@ const CredibilityOverlay: React.FC<Props> = ({ analysis, onClose }) => {
 
                 {/* 2. Medical Research Citations */}
                 {analysis.healthResearch?.sources &&
-                  analysis.healthResearch.sources.map((art, idx) => (
+                  analysis.healthResearch.sources.map((art: ResearchArticle, idx: number) => (
                     <a
                       key={`health-${idx}`}
                       href={art.url}
@@ -330,7 +326,7 @@ const CredibilityOverlay: React.FC<Props> = ({ analysis, onClose }) => {
 
                 {/* 3. News Grounding Citations */}
                 {analysis.newsVerification?.sources &&
-                  analysis.newsVerification.sources.map((art, idx) => (
+                  analysis.newsVerification.sources.map((art: NewsArticle, idx: number) => (
                     <a
                       key={`news-${idx}`}
                       href={art.url}
