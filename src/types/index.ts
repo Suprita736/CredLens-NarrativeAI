@@ -103,5 +103,24 @@ export interface EvidenceBundle {
   newsArticles?: NewsArticle[];
 }
 
-export type { AIProvider } from "./aiProvider";
+/**
+ * Abstract interface for AI providers (Gemini, OpenRouter, etc.)
+ * Both are optional — the extension functions without either.
+ */
+export interface AIProvider {
+  analyzeClaim(
+    claim: string,
+    evidence?: {
+      factCheck?: FactCheckResult | null;
+      healthResearch?: ResearchArticle[];
+      newsArticles?: NewsArticle[];
+    }
+  ): Promise<ClaimAnalysis>;
+}
+
+/** Settings stored in chrome.storage.local */
+export interface ExtensionSettings {
+  geminiApiKey?: string;
+  openRouterApiKey?: string;
+}
 

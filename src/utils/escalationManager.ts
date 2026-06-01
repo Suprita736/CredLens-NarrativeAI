@@ -1,87 +1,72 @@
 // src/utils/escalationManager.ts
 
 import { OpenRouterProvider } from "../services/openRouterService";
+import { retryWithDelay } from "./retryUtils";
 import type { ClaimAnalysis, EvidenceBundle } from "../types";
 
 /**
- * Helper to retry an operation with a delay.
- */
-function retryWithDelay<T>(
-  fn: () => Promise<T>,
-  attempts: number,
-  delayMs: number,
-  signal?: AbortSignal
-): Promise<T> {
-  let lastError: any;
-  for (let i = 0; i < attempts; i++) {
-    if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
-    try {
-      return fn();
-    } catch (err) {
-      lastError = err;
-      if (i < attempts - 1) {
-        return new Promise<T>((_, reject) => {
-          const t = setTimeout(() => {
-            fn().then(_).catch(reject);
-          }, delayMs);
-          signal?.addEventListener("abort", () => {
-            clearTimeout(t);
-            reject(new DOMException("Aborted", "AbortError"));
-          });
-        });
-      }
-    }
-  }
-  return Promise.reject(lastError);
-}
-
-/**
- * Decoupled Escalation Manager.
- * Governs the conditional escalation check and API call to OpenRouter.
+ * EscalationManager — Phase 5 (Last-Resort LLM, Fully Optional).
+ *
+ * OpenRouter is NEVER required. If no openRouterApiKey is provided,
+ * escalation is skipped silently and the extension continues normally.
+ *
+ * Escalation triggers only when:
+ *   1. confidence < CONFIDENCE_THRESHOLD (60)
+ *   2. openRouterApiKey is present in storage
  */
 export class EscalationManager {
   private static readonly CONFIDENCE_THRESHOLD = 60;
 
-  /**
-   * Determines if the claim verification needs escalation to OpenRouter.
-   * Exactly matches the original confidence check: confidence < 60
-   */
   static shouldEscalate(confidence: number): boolean {
     return confidence < this.CONFIDENCE_THRESHOLD;
   }
 
   /**
-   * Performs escalation to OpenRouter and returns augmented analysis properties.
-   * If escalation is not needed or fails, it returns an empty object (no changes).
+   * Conditionally escalates to OpenRouter.
+   *
+   * @param claim         - Verified claim text
+   * @param evidence      - Retrieval evidence bundle
+   * @param confidence    - Current confidence score (0–100)
+   * @param openRouterKey - OpenRouter API key (may be undefined — that's OK)
+   * @param signal        - AbortSignal for cancellation
+   * @returns Partial<ClaimAnalysis> to merge into synthesized result, or {} if skipped
    */
   static async escalateIfNeeded(
     claim: string,
     evidence: EvidenceBundle,
     confidence: number,
-    apiKey: string,
+    openRouterKey: string | undefined,
     signal?: AbortSignal
   ): Promise<Partial<ClaimAnalysis>> {
     if (!this.shouldEscalate(confidence)) {
       return {};
     }
 
+    // If no OpenRouter key configured, skip silently — extension still works
+    if (!openRouterKey) {
+      console.log(
+        `[EscalationManager] Confidence ${confidence} < ${this.CONFIDENCE_THRESHOLD} but no OpenRouter key configured — skipping escalation.`
+      );
+      return {};
+    }
+
     console.log(
-      `[EscalationManager] Low confidence (${confidence} < ${this.CONFIDENCE_THRESHOLD}). ` +
-        `Escalating to OpenRouter...`
+      `[EscalationManager] Confidence ${confidence} < ${this.CONFIDENCE_THRESHOLD}. Escalating to OpenRouter...`
     );
 
     try {
-      const openRouter = new OpenRouterProvider(apiKey);
-      const openResult = await retryWithDelay(
-        () => openRouter.analyzeClaim(claim, evidence),
+      const provider = new OpenRouterProvider(openRouterKey);
+      const result = await retryWithDelay(
+        () => provider.analyzeClaim(claim, evidence),
         1,
         1000,
         signal
       );
-      console.log("[EscalationManager] OpenRouter augmentation completed successfully.");
-      return openResult;
+      console.log("[EscalationManager] OpenRouter escalation completed.");
+      return result;
     } catch (err: any) {
-      console.warn("[EscalationManager] OpenRouter augmentation failed (non-fatal):", err);
+      if (err?.name === "AbortError") return {};
+      console.warn("[EscalationManager] OpenRouter failed (non-fatal):", err?.message);
       return {};
     }
   }

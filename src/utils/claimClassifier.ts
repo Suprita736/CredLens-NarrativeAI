@@ -24,7 +24,37 @@ export interface ClassificationResult {
 
 // Keyword maps per category with optional weight (default 1)
 const CATEGORY_KEYWORDS: Record<ClaimCategory, string[]> = {
-  health: ["doctor", "hormone", "insulin", "blood pressure", "disease", "vaccine", "clinic", "symptom", "treatment"],
+  health: [
+    "doctor",
+    "hormone",
+    "insulin",
+    "blood pressure",
+    "disease",
+    "vaccine",
+    "clinic",
+    "symptom",
+    "treatment",
+
+    "protein",
+    "kidney",
+    "kidneys",
+    "liver",
+    "heart",
+    "cholesterol",
+    "diabetes",
+    "cancer",
+    "obesity",
+    "nutrition",
+    "diet",
+    "supplement",
+    "supplements",
+    "vitamin",
+    "vitamins",
+    "creatine",
+    "metabolism",
+    "blood sugar",
+    "inflammation"
+  ],
   news: ["government", "election", "president", "war", "policy", "breaking news", "report", "statement"],
   politics: ["government", "election", "president", "senate", "congress", "policy", "law", "regulation"],
   science: ["study", "researchers", "experiment", "scientific", "paper", "journal", "analysis"],

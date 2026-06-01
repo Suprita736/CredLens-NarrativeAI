@@ -160,9 +160,8 @@ const YouTubeShortsDetector = () => {
       console.log("[Content] Video already analyzed.");
       return;
     }
-    // Lightweight pre-filter — zero API cost
     const filterResult = preFilterTranscript(deduped);
-    if (!filterResult.pass) {
+    if (filterResult.pass === false) {
       console.log(
         `[Content] Pre-filter blocked transcript: ${filterResult.reason}`,
       );

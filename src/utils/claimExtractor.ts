@@ -43,7 +43,7 @@ export interface ClaimExtractionResult {
 // A sentence must reach MIN_CLAIM_SCORE to be included in the payload.
 // Keeping thresholds low ensures we never drop real factual content.
 
-const MIN_CLAIM_SCORE = 1; // inclusive; raise to 2 to be slightly stricter
+const MIN_CLAIM_SCORE = 2; // inclusive; raise to 2 to be slightly stricter
 
 /** Patterns that give the sentence +2 points (strong factual indicators). */
 const HIGH_SIGNAL_PATTERNS: RegExp[] = [
@@ -87,6 +87,14 @@ const EXCLUSION_PATTERNS: RegExp[] = [
   /^(?:i think|i feel|i believe|in my opinion|personally|i love|i hate|omg|wow|amazing|incredible|crazy|insane)\b/i,
   // Music/lyric bracket tags
   /\[(?:music|musique|musik|applause|cheering|laughter|crowd|audio)\]/i,
+  /\bif you're someone who\b/i,
+  /\bif you are someone who\b/i,
+  /\bif you love\b/i,
+  /\bif you like\b/i,
+  /\btoday i want to talk about\b/i,
+  /\btoday we're talking about\b/i,
+  /\blet me explain\b/i,
+  /\bfirst things first\b/i,
 ];
 
 // ─── Sentence splitter ────────────────────────────────────────────────────────
@@ -199,13 +207,13 @@ export function extractClaimSentences(transcript: string): ClaimExtractionResult
   if (unique.length > 0) {
     console.log(
       `[ClaimExtractor] Extracted ${unique.length}/${allSentences.length} sentences. ` +
-        `Token reduction: ~${reductionPercent}% (${originalCharCount} → ${reducedCharCount} chars).`
+      `Token reduction: ~${reductionPercent}% (${originalCharCount} → ${reducedCharCount} chars).`
     );
     console.log("[ClaimExtractor] Claim sentences:", unique);
   } else {
     console.log(
       `[ClaimExtractor] No claim sentences extracted from ${allSentences.length} total sentences. ` +
-        `Caller should fall back to full transcript.`
+      `Caller should fall back to full transcript.`
     );
   }
 

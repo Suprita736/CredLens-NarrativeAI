@@ -1,47 +1,19 @@
 // src/background/index.ts
+// CredLens Phase 5 — Retrieval-First, LLM-Last-Resort Pipeline
+
 import { QueueManager } from "./queueManager";
-import { GeminiService } from "../services/geminiService";
 import { CacheService } from "../services/cacheService";
 import { ConfidenceScorer } from "../utils/confidenceScorer";
-import { filterForClaims } from "../utils/claimFilter"; // Phase 3.5
-import { extractClaimSentences } from "../utils/claimExtractor"; // Phase 3.5
+import { filterForClaims } from "../utils/claimFilter";
+import { extractClaimSentences } from "../utils/claimExtractor";
+import { filterVerifiableClaim } from "../utils/verifiabilityFilter";
 import { ClaimClassifier } from "../utils/claimClassifier";
-import { ClaimRouter } from "../utils/claimRouter";
-import { ConfidenceEngine } from "../utils/confidenceEngine";
 import { RetrievalEngine } from "../services/retrievalEngine";
 import { EscalationManager } from "../utils/escalationManager";
 import type { ClaimAnalysis, BackgroundMessage, BackgroundResponse } from "../types";
 
-function retryWithDelay<T>(
-  fn: () => Promise<T>,
-  attempts: number,
-  delayMs: number,
-  signal?: AbortSignal
-): Promise<T> {
-  let lastError: any;
-  for (let i = 0; i < attempts; i++) {
-    if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
-    try {
-      return fn();
-    } catch (err) {
-      lastError = err;
-      if (i < attempts - 1) {
-        return new Promise<T>((_, reject) => {
-          const t = setTimeout(() => {
-            fn().then(_).catch(reject);
-          }, delayMs);
-          signal?.addEventListener('abort', () => {
-            clearTimeout(t);
-            reject(new DOMException('Aborted', 'AbortError'));
-          });
-        });
-      }
-    }
-  }
-  return Promise.reject(lastError);
-}
+// ── Lifecycle hooks ────────────────────────────────────────────────────────────
 
-// Run cache pruning on install and startup
 chrome.runtime.onInstalled.addListener(() => {
   console.log("[Background] CredLens AI installed/updated.");
   CacheService.prune();
@@ -51,10 +23,15 @@ chrome.runtime.onStartup.addListener(() => {
   CacheService.prune();
 });
 
-// Background Port Messaging Router
+chrome.runtime.onSuspend.addListener(() => {
+  QueueManager.cancelAll();
+});
+
+// ── Port message router ────────────────────────────────────────────────────────
+
 chrome.runtime.onConnect.addListener((port) => {
   if (port.name !== "credlens-verification") return;
-  console.log("[Background] Content script connected to verification port.");
+  console.log("[Background] Content script connected.");
 
   let activeVideoId: string | null = null;
 
@@ -62,289 +39,304 @@ chrome.runtime.onConnect.addListener((port) => {
     const { action, videoId, transcript } = message;
     if (action === "VERIFY_TRANSCRIPT" && videoId && transcript) {
       activeVideoId = videoId;
-      console.log(`[Background] Received verification request for ${videoId}`);
       await runVerificationPipeline(videoId, transcript, port);
     } else if (action === "CANCEL_VERIFICATION" && videoId) {
-      console.log(`[Background] Received cancellation request for ${videoId}`);
+      console.log(`[Background] Cancel requested for ${videoId}`);
       QueueManager.cancel(videoId);
     }
   });
 
   port.onDisconnect.addListener(() => {
-    console.log("[Background] Content script disconnected. Cleaning active jobs...");
-    if (activeVideoId) {
-      QueueManager.cancel(activeVideoId);
-    }
+    console.log("[Background] Port disconnected. Cleaning active jobs.");
+    if (activeVideoId) QueueManager.cancel(activeVideoId);
   });
 });
 
+// ── Main pipeline ──────────────────────────────────────────────────────────────
+
 /**
- * Orchestrates the Phase 2 claim verification pipeline.
+ * Phase 5 Retrieval-First Verification Pipeline.
+ *
+ * Decision flow:
+ *
+ *   Transcript
+ *   → Local filters (transcriptFilter → claimFilter)
+ *   → Local claim extraction (claimExtractor)
+ *   → Verifiability filter  ← NEW (rejects "I'm a dietitian" etc.)
+ *   → Claim hash cache       ← checked BEFORE retrieval
+ *   → Local classification
+ *   → Smart retrieval        ← category-aware, no blanket queries
+ *   → Retrieval confidence
+ *
+ *   if confidence >= 60  → local synthesis → done
+ *   if confidence < 60   → Gemini (optional, if key present)
+ *                        → OpenRouter (optional, if key present)
+ *                        → local synthesis fallback
+ *
+ * Both Gemini and OpenRouter are optional. The extension produces results
+ * from retrieval alone. LLMs only improve synthesis quality when available.
  */
 async function runVerificationPipeline(
   videoId: string,
   transcript: string,
   port: chrome.runtime.Port
-) {
-  // 1. Send loading status early to content script
+): Promise<void> {
   postResponse(port, { status: "loading", videoId });
 
-  // Register with QueueManager to get a cancellation signal
   const signal = QueueManager.register(videoId);
 
   try {
-    // 2. Retrieve Gemini API Key from storage
-    const storage = (await chrome.storage.local.get(["geminiApiKey"])) as {
-      geminiApiKey?: string;
-    };
-    const apiKey = storage.geminiApiKey;
-    if (!apiKey) {
-      console.warn("[Background] No Gemini API key stored");
-      postResponse(port, {
-        status: "error",
-        videoId,
-        error:
-          "Missing API Key. Please click the extension icon and configure your Gemini API Key.",
-      });
-      QueueManager.complete(videoId);
-      return;
-    }
+    // ── Step 1: Load API keys (all optional) ──────────────────────────────────
+    const storage = await chrome.storage.local.get([
+      "geminiApiKey",
+      "openRouterApiKey",
+    ]) as { geminiApiKey?: string; openRouterApiKey?: string };
 
-    // 3. Double-Layer Cache Level 1: Check Video ID Cache
-    const cachedAnalysis = await CacheService.get(videoId);
-    if (cachedAnalysis) {
-      console.log(`[Background] Cache Hit (Video ID): ${videoId}`);
-      postResponse(port, { status: "completed", videoId, analysis: cachedAnalysis });
+    const geminiApiKey = storage.geminiApiKey || "";
+    const openRouterApiKey = storage.openRouterApiKey || "";
+    // Google API key (same account as Gemini) powers FactCheck Tools API
+    const googleApiKey = geminiApiKey;
+
+    console.log(
+      `[Background] Keys: gemini=${geminiApiKey ? "✓" : "✗"}, openRouter=${openRouterApiKey ? "✓" : "✗"}`
+    );
+
+    // ── Step 2: Video ID cache ─────────────────────────────────────────────────
+    const cachedByVideo = await CacheService.get(videoId);
+    if (cachedByVideo) {
+      console.log(`[Background] Cache Hit (videoId): ${videoId}`);
+      postResponse(port, { status: "completed", videoId, analysis: cachedByVideo });
       QueueManager.complete(videoId);
       return;
     }
 
     if (signal.aborted) throw new DOMException("Aborted", "AbortError");
 
-    // 4. Initialize Gemini Service
-    const gemini = new GeminiService(apiKey);
+    // ── Step 3: Local claim presence filter ────────────────────────────────────
+    // Zero API cost — runs entirely locally
+    const filterResult = filterForClaims(transcript);
+    console.log(
+      `[Background] ClaimFilter: hasClaim=${filterResult.hasPotentialClaim}, ` +
+      `confidence=${filterResult.confidence}, patterns=${filterResult.matchedPatterns
+        .filter((p) => p !== "__numeric__")
+        .slice(0, 4)
+        .join(", ") || "(none)"}`
+    );
 
-    // ── Phase 3.5 — Local Claim Filter ────────────────────────────────────────
-    // Run zero-cost local heuristics BEFORE any Gemini call.
-    // If the transcript is clearly devoid of factual signals (e.g. it's a
-    // music video or pure filler) we skip Gemini entirely and finalise early.
-    // IMPORTANT: This is additive — if the filter throws for any reason we
-    // catch the error and fall through to normal Gemini analysis.
-
-    let claimSentences: string[] | undefined;
-    try {
-      const filterResult = filterForClaims(transcript);
-      console.log(
-        `[Background] Phase 3.5 Claim Filter: hasPotentialClaim=${filterResult.hasPotentialClaim}, ` +
-          `confidence=${filterResult.confidence}, ` +
-          `matchedPatterns=${filterResult.matchedPatterns
-            .filter((p) => p !== "__numeric__")
-            .slice(0, 5)
-            .join(", ") || "(none)"}`
-      );
-      if (!filterResult.hasPotentialClaim) {
-        console.log(
-          `[Background] Phase 3.5 — Local filter skipped Gemini call. ` +
-            "Transcript has no detectable claim signals."
-        );
-        const noClaimResult: ClaimAnalysis = {
-          containsClaim: false,
-          isSatire: false,
-          reasoning:
-            "Local claim filter: no factual claim signals detected in transcript.",
-          verdict: "No verifiable claims detected",
-          credibility: "none",
-        };
-        await CacheService.set(videoId, null, noClaimResult);
-        postResponse(port, { status: "completed", videoId, analysis: noClaimResult });
-        QueueManager.complete(videoId);
-        return;
-      }
-
-      // ── Phase 3.5 — Local Claim Sentence Extraction ──────────────────────────
-      const extractionResult = extractClaimSentences(transcript);
-      console.log(
-        `[Background] Phase 3.5 Claim Extractor: ${extractionResult.stats.extractedCount}/${extractionResult.stats.totalSentences} sentences kept, ` +
-          `~${extractionResult.stats.reductionPercent}% token reduction ` +
-          `(${extractionResult.stats.originalCharCount} → ${extractionResult.stats.reducedCharCount} chars).`
-      );
-      if (extractionResult.sentences.length > 0) {
-        claimSentences = extractionResult.sentences;
-      } else {
-        console.log(
-          "[Background] Phase 3.5 — Extractor found 0 sentences; falling back to full transcript for Gemini."
-        );
-      }
-    } catch (filterErr) {
-      console.warn(
-        "[Background] Phase 3.5 local filter/extractor error (non-fatal, falling back):",
-        filterErr
-      );
+    if (!filterResult.hasPotentialClaim) {
+      const noClaimResult: ClaimAnalysis = {
+        containsClaim: false,
+        isSatire: false,
+        reasoning: "Local filter: no factual claim signals detected in transcript.",
+        verdict: "No verifiable claims detected",
+        credibility: "none",
+      };
+      await CacheService.set(videoId, null, noClaimResult);
+      postResponse(port, { status: "completed", videoId, analysis: noClaimResult });
+      QueueManager.complete(videoId);
+      return;
     }
 
     if (signal.aborted) throw new DOMException("Aborted", "AbortError");
 
-    // 5. Local Classification & Routing (Zero-cost, local-first intelligence)
-    const claimText = (claimSentences && claimSentences.length > 0 && claimSentences[0].trim().length > 0
-      ? claimSentences[0]
-      : transcript.slice(0, 150)
-    ).trim();
+    // ── Step 4: Local claim extraction ────────────────────────────────────────
+    const extraction = extractClaimSentences(transcript);
+    console.log(
+      `[Background] ClaimExtractor: ${extraction.stats.extractedCount}/${extraction.stats.totalSentences} sentences, ` +
+      `~${extraction.stats.reductionPercent}% token reduction`
+    );
 
-    const localClassification = ClaimClassifier.classify(claimText);
-    const category = localClassification.category || "other";
-    console.log(`[Classifier] Local category=${category}`);
+    // ── Step 5: Verifiability filter (NEW) ────────────────────────────────────
+    // Rejects personal intros, CTAs, and opinions BEFORE any API call
+    const candidates =
+      extraction.sentences.length > 0
+        ? extraction.sentences
+        : [transcript.slice(0, 250).trim()]; // conservative fallback
 
-    const route = ClaimRouter.determineRoute(category);
-    console.log(`[Router] Route=${route}`);
+    const verifiability = filterVerifiableClaim(candidates);
+    console.log(
+      `[Background] VerifiabilityFilter: isVerifiable=${verifiability.isVerifiable}, ` +
+      `reason="${verifiability.reason}"`
+    );
 
-    // 6. Double-Layer Cache Level 2: Check Claim Hash Cache
+    if (!verifiability.isVerifiable) {
+      const noVerifiableResult: ClaimAnalysis = {
+        containsClaim: false,
+        isSatire: false,
+        reasoning: `Verifiability filter: ${verifiability.reason}`,
+        verdict: "No verifiable claims detected",
+        credibility: "none",
+      };
+      await CacheService.set(videoId, null, noVerifiableResult);
+      postResponse(port, { status: "completed", videoId, analysis: noVerifiableResult });
+      QueueManager.complete(videoId);
+      return;
+    }
+
+    const claimText = verifiability.bestClaim;
+    console.log(`[Background] Selected claim: "${claimText.slice(0, 100)}"`);
+
+    // ── Step 6: Claim hash cache ──────────────────────────────────────────────
+    // Checked HERE — before retrieval — so cached results skip all API calls
     const claimHash = await CacheService.computeClaimHash(claimText);
-    const cachedClaimAnalysis = await CacheService.getByClaimHash(claimHash);
-    if (cachedClaimAnalysis) {
-      console.log(`[Background] Cache Hit (Claim Hash): ${claimHash.slice(0, 12)}…`);
-      await CacheService.set(videoId, claimHash, cachedClaimAnalysis);
-      postResponse(port, { status: "completed", videoId, analysis: cachedClaimAnalysis });
+    const cachedByClaim = await CacheService.getByClaimHash(claimHash);
+    if (cachedByClaim) {
+      console.log(`[Background] Cache Hit (claimHash): ${claimHash.slice(0, 12)}…`);
+      await CacheService.set(videoId, claimHash, cachedByClaim);
+      postResponse(port, { status: "completed", videoId, analysis: cachedByClaim });
       QueueManager.complete(videoId);
       return;
     }
 
     if (signal.aborted) throw new DOMException("Aborted", "AbortError");
 
-    // 7. Search External Verification Databases (MODULAR RETRIEVAL FIRST)
-    console.log("[Retrieval] Running FactCheck");
-    console.log("[Retrieval] Running PubMed");
-    console.log("[Retrieval] Running News");
-    const evidence = await RetrievalEngine.retrieve(claimText, category, apiKey, signal);
-    const factCheckRes = evidence.factCheck;
-    const healthRes = evidence.healthResearch || [];
-    const newsRes = evidence.newsArticles || [];
+    // ── Step 7: Local classification (zero-cost) ──────────────────────────────
+    const classification = ClaimClassifier.classify(claimText);
+    const category =
+      !classification.category || classification.category === "unknown"
+        ? "other"
+        : classification.category;
+    console.log(
+      `[Background] Classifier: category="${category}", ` +
+      `confidence=${classification.confidence}, keywords=[${classification.matchedKeywords.slice(0, 3).join(", ")}]`
+    );
+
+    // ── Step 8: Smart retrieval ───────────────────────────────────────────────
+    console.log(`[Background] ==> Smart retrieval START (category=${category})`);
+    const evidence = await RetrievalEngine.retrieve(
+      claimText,
+      category,
+      googleApiKey,
+      signal
+    );
+
+    const factCheckRes = evidence.factCheck ?? null;
+    const healthRes = evidence.healthResearch ?? [];
+    const newsRes = evidence.newsArticles ?? [];
+    const hasEvidence =
+      !!factCheckRes || healthRes.length > 0 || newsRes.length > 0;
+
+    console.log(
+      `[Background] Retrieval complete: factCheck=${!!factCheckRes}, ` +
+      `pubmed=${healthRes.length}, news=${newsRes.length}, hasEvidence=${hasEvidence}`
+    );
 
     if (signal.aborted) throw new DOMException("Aborted", "AbortError");
 
-    // 8. Compute Local Evidence Confidence Score
-    const localConfidence = ConfidenceEngine.compute({
-      factCheck: factCheckRes ? [factCheckRes] : [],
-      healthResearch: healthRes,
-      newsArticles: newsRes,
-    });
-    console.log(`[Confidence] Score=${localConfidence}`);
+    // ── Step 9: Retrieval-based confidence ────────────────────────────────────
+    const retrievalConfidence = ConfidenceScorer.computeRetrieval(
+      { factCheck: factCheckRes, healthResearch: healthRes, newsArticles: newsRes },
+      category,
+      claimText
+    );
+    console.log(`[Background] Retrieval confidence: ${retrievalConfidence}`);
 
-    // Verify at least one source produced evidence (Confidence Safety Rule)
-    const hasEvidence = !!factCheckRes || healthRes.length > 0 || newsRes.length > 0;
+    // ── Step 10: Decision engine ──────────────────────────────────────────────
+    // Initialize with local synthesis as the guaranteed fallback.
+    // TypeScript strict mode requires definite assignment — this ensures it.
+    let synthesizedAnalysis: ClaimAnalysis = buildLocalSynthesis(
+      claimText, category, retrievalConfidence,
+      factCheckRes, healthRes, newsRes
+    );
 
-    let synthesizedAnalysis: ClaimAnalysis;
-
-    // Check if we can skip LLM (High confidence AND at least one verification source returned data)
-    if (localConfidence >= 75 && hasEvidence) {
-      console.log("[Escalation] Skipped Gemini due to high confidence");
-      synthesizedAnalysis = buildLocalSynthesis(claimText, category, localConfidence, factCheckRes, healthRes, newsRes);
+    if (retrievalConfidence >= 60) {
+      // Sufficient confidence OR authoritative source hit → local synthesis only
+      console.log(
+        `[Background] Confidence ${retrievalConfidence} >= 60 (or has evidence) — local synthesis, no LLM.`
+      );
+      // synthesizedAnalysis already set to local synthesis above — nothing extra to do
     } else {
-      // Moderate/Low confidence OR no evidence → Try to verify/synthesize using Gemini
-      try {
-        console.log("[Background] Sending to Gemini for claim classification...");
-        const claimAnalysis = await retryWithDelay(
-          () => gemini.analyzeTranscript(transcript, signal, claimSentences),
-          1,
-          1000,
-          signal
-        );
+      // Low confidence + no evidence → try LLM if available
+      console.log(
+        `[Background] Confidence ${retrievalConfidence} < 60 + no evidence → attempting LLM escalation.`
+      );
 
-        if (signal.aborted) throw new DOMException("Aborted", "AbortError");
-
-        // If no claims are found or it's comedy/satire, stop the pipeline early (Quota Saver!)
-        if (!claimAnalysis.containsClaim || claimAnalysis.isSatire) {
-          console.log("[Background] Gemini classified as no claim or satire.");
-          // BUT check if retrieval found supporting evidence anyway!
-          if (hasEvidence) {
-            console.log("[Gemini Fallback] Gemini returned no claim but retrieval has evidence; falling back to retrieval-only verification.");
-            synthesizedAnalysis = buildLocalSynthesis(claimText, category, localConfidence, factCheckRes, healthRes, newsRes);
-          } else {
-            console.log("[Background] No factual claims found or satire detected. Finalizing...");
-            const finalResult: ClaimAnalysis = {
-              containsClaim: false,
-              isSatire: claimAnalysis.isSatire,
-              reasoning: claimAnalysis.reasoning,
-              verdict: claimAnalysis.isSatire
-                ? "Satire / Entertainment"
-                : "No verifiable claims detected",
-              credibility: "none",
-            };
-            await CacheService.set(videoId, null, finalResult);
-            postResponse(port, { status: "completed", videoId, analysis: finalResult });
-            QueueManager.complete(videoId);
-            return;
-          }
-        } else {
-          console.log("[Background] External searches complete. Synthesizing evidence...");
-          const synthesisInput = {
-            factCheck: factCheckRes,
-            healthResearch: healthRes,
-            newsArticles: newsRes,
-          };
-          synthesizedAnalysis = await retryWithDelay(
-            () => gemini.synthesizeVerification(claimText, category, synthesisInput, signal),
-            1,
-            1000,
+      // Try Gemini (optional — if key configured)
+      if (geminiApiKey && !signal.aborted) {
+        try {
+          console.log("[Background] Gemini synthesis attempt (optional)...");
+          // Dynamic import — SDK not loaded when key is absent
+          const { GeminiService } = await import("../services/geminiService");
+          const gemini = new GeminiService(geminiApiKey);
+          const geminiResult = await gemini.synthesizeVerification(
+            claimText,
+            category,
+            { factCheck: factCheckRes, healthResearch: healthRes, newsArticles: newsRes },
             signal
           );
+          // Override default only on success
+          synthesizedAnalysis = geminiResult;
+          synthesizedAnalysis.claim = synthesizedAnalysis.claim || claimText;
+          synthesizedAnalysis.category = synthesizedAnalysis.category || (category as any);
+          console.log("[Background] Gemini synthesis succeeded.");
+        } catch (geminiErr: any) {
+          if (geminiErr?.name === "AbortError") throw geminiErr;
+          console.warn(
+            "[Background] Gemini failed (non-fatal) — retaining local synthesis:",
+            geminiErr?.message
+          );
+          // synthesizedAnalysis stays as local synthesis default
         }
-      } catch (err: any) {
-        console.warn("[Gemini Fallback] Quota exceeded or error. Falling back to retrieval-only verification:", err);
-        // Fallback to retrieval-based synthesis
-        synthesizedAnalysis = buildLocalSynthesis(claimText, category, localConfidence, factCheckRes, healthRes, newsRes);
+      } else {
+        console.log("[Background] No Gemini key — using local synthesis.");
       }
     }
 
     if (signal.aborted) throw new DOMException("Aborted", "AbortError");
 
-    // Attach rich structural sub-blocks for UI details
-    if (!synthesizedAnalysis.factCheck) synthesizedAnalysis.factCheck = factCheckRes;
+    // ── Step 11: Attach evidence sub-blocks to analysis ───────────────────────
+    if (!synthesizedAnalysis.factCheck) {
+      synthesizedAnalysis.factCheck = factCheckRes;
+    }
     if (healthRes.length > 0 && !synthesizedAnalysis.healthResearch) {
       synthesizedAnalysis.healthResearch = {
-        status: synthesizedAnalysis.verdict as any,
+        status: "Scientifically supported",
         summary: synthesizedAnalysis.explanation || "",
         sources: healthRes,
       };
     }
     if (newsRes.length > 0 && !synthesizedAnalysis.newsVerification) {
       synthesizedAnalysis.newsVerification = {
-        status: synthesizedAnalysis.verdict as any,
+        status: "Widely reported",
         summary: synthesizedAnalysis.explanation || "",
         sources: newsRes,
       };
     }
 
-    // 9. Local multi-factor confidence scoring
-    const scores = ConfidenceScorer.compute(synthesizedAnalysis);
-    synthesizedAnalysis.confidence = scores.confidence;
-    synthesizedAnalysis.scientificSupport = scores.scientificSupport;
-    synthesizedAnalysis.manipulationRisk = scores.manipulationRisk;
-    synthesizedAnalysis.evidenceStrength = scores.evidenceStrength;
+    // ── Step 12: Final multi-factor confidence scoring ────────────────────────
+    const finalScores = ConfidenceScorer.compute(synthesizedAnalysis);
+    synthesizedAnalysis.confidence = finalScores.confidence;
+    synthesizedAnalysis.scientificSupport = finalScores.scientificSupport;
+    synthesizedAnalysis.manipulationRisk = finalScores.manipulationRisk;
+    synthesizedAnalysis.evidenceStrength = finalScores.evidenceStrength;
 
-    // 9b. If confidence low, augment with OpenRouter verification via EscalationManager
-    const openResult = await EscalationManager.escalateIfNeeded(
+    // ── Step 13: OpenRouter last-resort (optional) ────────────────────────────
+    // Only fires when: confidence < 60 AND openRouterApiKey configured
+    const openRouterResult = await EscalationManager.escalateIfNeeded(
       claimText,
       evidence,
-      scores.confidence,
-      apiKey,
+      finalScores.confidence,
+      openRouterApiKey || undefined,
       signal
     );
-    Object.assign(synthesizedAnalysis, openResult);
+    if (Object.keys(openRouterResult).length > 0) {
+      Object.assign(synthesizedAnalysis, openRouterResult);
+      console.log("[Background] OpenRouter result merged.");
+    }
 
-    // 10. Multi-tier Caching
+    // ── Step 14: Cache (both videoId + claimHash) then respond ───────────────
     await CacheService.set(videoId, claimHash, synthesizedAnalysis);
-
-    // 10. Respond success
     postResponse(port, { status: "completed", videoId, analysis: synthesizedAnalysis });
+
   } catch (error: any) {
-    if (error.name === "AbortError" || signal.aborted) {
-      console.log(`[Background] Verification pipeline aborted for ${videoId}`);
+    if (error?.name === "AbortError" || signal.aborted) {
+      console.log(`[Background] Pipeline aborted for ${videoId}`);
     } else {
-      console.error(`[Background] Verification pipeline error for ${videoId}:`, error);
+      console.error(`[Background] Pipeline error for ${videoId}:`, error);
       postResponse(port, {
         status: "error",
         videoId,
-        error: `Verification pipeline encountered an error: ${error.message || error}`,
+        error: `Verification failed: ${error?.message || String(error)}`,
       });
     }
   } finally {
@@ -352,20 +344,24 @@ async function runVerificationPipeline(
   }
 }
 
-/**
- * Helper to safely post responses back through the communication port.
- */
-function postResponse(port: chrome.runtime.Port, response: BackgroundResponse) {
+// ── Helpers ────────────────────────────────────────────────────────────────────
+
+function postResponse(
+  port: chrome.runtime.Port,
+  response: BackgroundResponse
+): void {
   try {
     port.postMessage(response);
-  } catch (err) {
-    console.warn("[Background] Failed to post message to disconnected port:", err);
+  } catch {
+    // Port may have disconnected; swallow silently
   }
 }
 
-// Background cleanup on suspend
-chrome.runtime.onSuspend.addListener(() => QueueManager.cancelAll());
-
+/**
+ * Builds a ClaimAnalysis from retrieval evidence alone.
+ * Used when confidence >= 60 or as LLM fallback.
+ * Never returns "none" credibility when evidence exists.
+ */
 function buildLocalSynthesis(
   claimText: string,
   category: string,
@@ -377,35 +373,36 @@ function buildLocalSynthesis(
   const hasFactCheck = !!factCheckRes;
   const hasHealth = healthRes.length > 0;
   const hasNews = newsRes.length > 0;
+  const hasEvidence = hasFactCheck || hasHealth || hasNews;
 
   let verdict = "Unverified";
-  let credibility: "low" | "medium" | "high" | "none" = "none";
+  let credibility: "low" | "medium" | "high" | "none" = hasEvidence ? "medium" : "none";
   let explanation = "No trusted sources could verify this statement at this time.";
 
   if (hasFactCheck) {
     verdict = factCheckRes.verdict;
-    const loweredVerdict = verdict.toLowerCase();
+    const v = verdict.toLowerCase();
     if (
-      loweredVerdict.includes("false") ||
-      loweredVerdict.includes("incorrect") ||
-      loweredVerdict.includes("fake") ||
-      loweredVerdict.includes("misleading") ||
-      loweredVerdict.includes("debunk")
+      v.includes("false") ||
+      v.includes("incorrect") ||
+      v.includes("fake") ||
+      v.includes("misleading") ||
+      v.includes("debunk")
     ) {
       credibility = "low";
-      explanation = `Google Fact Check database matches a debunked claim: "${factCheckRes.explanation}".`;
+      explanation = `A fact-checking review found this claim inaccurate: "${factCheckRes.explanation}".`;
     } else {
       credibility = "high";
-      explanation = `Google Fact Check database matches a verified claim: "${factCheckRes.explanation}".`;
+      explanation = `A fact-checking review corroborates this claim: "${factCheckRes.explanation}".`;
     }
   } else if (hasHealth) {
     verdict = "Scientifically supported";
     credibility = "high";
-    explanation = `Peer-reviewed scientific literature corroborates this claim (found ${healthRes.length} studies).`;
+    explanation = `Peer-reviewed research corroborates this claim (${healthRes.length} paper${healthRes.length !== 1 ? "s" : ""} found).`;
   } else if (hasNews) {
     verdict = "Widely reported";
     credibility = "high";
-    explanation = `High-credibility news reports corroborate this claim (found ${newsRes.length} articles).`;
+    explanation = `Credible news sources corroborate this claim (${newsRes.length} report${newsRes.length !== 1 ? "s" : ""} found).`;
   }
 
   return {
@@ -418,19 +415,22 @@ function buildLocalSynthesis(
     confidence,
     explanation,
     alternativeExplanation: "Retrieved via local intelligence verification tools.",
-    sourceName: factCheckRes ? factCheckRes.source : (hasHealth ? healthRes[0].journal : newsRes[0]?.source),
-    sourceUrl: factCheckRes ? factCheckRes.url : (hasHealth ? healthRes[0].url : newsRes[0]?.url),
+    sourceName: hasFactCheck
+      ? factCheckRes.source
+      : hasHealth
+        ? healthRes[0]?.journal
+        : newsRes[0]?.source,
+    sourceUrl: hasFactCheck
+      ? factCheckRes.url
+      : hasHealth
+        ? healthRes[0]?.url
+        : newsRes[0]?.url,
     factCheck: factCheckRes,
-    healthResearch: hasHealth ? {
-      status: "Scientifically supported" as any,
-      summary: explanation,
-      sources: healthRes,
-    } : null,
-    newsVerification: hasNews ? {
-      status: "Widely reported" as any,
-      summary: explanation,
-      sources: newsRes,
-    } : null,
+    healthResearch: hasHealth
+      ? { status: "Scientifically supported", summary: explanation, sources: healthRes }
+      : null,
+    newsVerification: hasNews
+      ? { status: "Widely reported", summary: explanation, sources: newsRes }
+      : null,
   };
 }
-

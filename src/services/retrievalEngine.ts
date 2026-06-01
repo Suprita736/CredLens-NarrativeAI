@@ -4,100 +4,85 @@ import { FactCheckService } from "./factCheckService";
 import { HealthService } from "./healthService";
 import { NewsService } from "./newsService";
 import { ClaimRouter } from "../utils/claimRouter";
+import { retryWithDelay } from "../utils/retryUtils";
 import type { EvidenceBundle } from "../types";
 
 /**
- * Helper to retry an operation with a delay.
- */
-function retryWithDelay<T>(
-  fn: () => Promise<T>,
-  attempts: number,
-  delayMs: number,
-  signal?: AbortSignal
-): Promise<T> {
-  let lastError: any;
-  for (let i = 0; i < attempts; i++) {
-    if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
-    try {
-      return fn();
-    } catch (err) {
-      lastError = err;
-      if (i < attempts - 1) {
-        return new Promise<T>((_, reject) => {
-          const t = setTimeout(() => {
-            fn().then(_).catch(reject);
-          }, delayMs);
-          signal?.addEventListener("abort", () => {
-            clearTimeout(t);
-            reject(new DOMException("Aborted", "AbortError"));
-          });
-        });
-      }
-    }
-  }
-  return Promise.reject(lastError);
-}
-
-/**
- * Standardized Retrieval Engine.
- * Coordinates concurrent queries to FactCheck, PubMed, and Google News services.
+ * Smart Retrieval Engine — Phase 5.
+ *
+ * Category-aware routing table (no blanket queries):
+ *
+ *   health    → PubMed only
+ *   science   → PubMed + FactCheck
+ *   politics  → FactCheck + News
+ *   news      → FactCheck + News
+ *   finance   → FactCheck + News
+ *   general / other / technology / unknown → FactCheck only
+ *
+ * The Google API key is used exclusively for FactCheck Tools API.
+ * PubMed and Google News RSS require no API key.
  */
 export class RetrievalEngine {
-  /**
-   * Concurrently queries modular verification services based on the category.
-   * Returns a standardized EvidenceBundle.
-   */
   static async retrieve(
     claim: string,
     category: string,
-    apiKey: string,
+    googleApiKey: string,
     signal?: AbortSignal
   ): Promise<EvidenceBundle> {
-    console.log(`[RetrievalEngine] Initiating concurrent verification search for category: ${category}`);
+    const cat = (category || "other").toLowerCase().trim();
 
-    const [factCheckRes, healthRes, newsRes] = await Promise.all([
-      // Google Fact Check search (with retry wrapper)
-      retryWithDelay(
-        () => FactCheckService.verifyClaim(claim, apiKey, signal),
-        1,
-        1000,
-        signal
-      ).catch((err: any) => {
-        console.error("[RetrievalEngine] Service failure (FactCheck):", err);
-        return null;
-      }),
+    const usePubMed = ClaimRouter.shouldSearchPubMed(cat);
+    const useFactCheck = ClaimRouter.shouldSearchFactCheck(cat);
+    const useNews = ClaimRouter.shouldSearchNews(cat);
 
-      // PubMed health search (if health category)
-      ClaimRouter.shouldSearchPubMed(category)
-        ? retryWithDelay(
-            () => HealthService.searchPubMed(claim, signal),
-            1,
-            1000,
-            signal
-          ).catch((err: any) => {
-            console.error("[RetrievalEngine] Service failure (Health PubMed):", err);
-            return [];
-          })
-        : Promise.resolve([]),
+    console.log(
+      `[RetrievalEngine] category="${cat}" → PubMed=${usePubMed}, FactCheck=${useFactCheck}, News=${useNews}`
+    );
 
-      // Google News search (if news/politics/other category)
-      ClaimRouter.shouldSearchNews(category)
-        ? retryWithDelay(
-            () => NewsService.searchNews(claim, signal),
-            1,
-            1000,
-            signal
-          ).catch((err: any) => {
-            console.error("[RetrievalEngine] Service failure (Google News):", err);
-            return [];
-          })
-        : Promise.resolve([]),
+    // ── Run only the applicable sources concurrently ──────────────────────────
+
+    const factCheckPromise: Promise<any> = useFactCheck
+      ? retryWithDelay(
+          () => FactCheckService.verifyClaim(claim, googleApiKey, signal),
+          1,
+          1000,
+          signal
+        ).catch((err: any) => {
+          console.error("[RetrievalEngine] FactCheck failed:", err?.message);
+          return null;
+        })
+      : Promise.resolve(null);
+
+    const pubMedPromise: Promise<any[]> = usePubMed
+      ? retryWithDelay(
+          () => HealthService.searchPubMed(claim, signal),
+          1,
+          1000,
+          signal
+        ).catch((err: any) => {
+          console.error("[RetrievalEngine] PubMed failed:", err?.message);
+          return [];
+        })
+      : Promise.resolve([]);
+
+    const newsPromise: Promise<any[]> = useNews
+      ? retryWithDelay(
+          () => NewsService.searchNews(claim, signal),
+          1,
+          1000,
+          signal
+        ).catch((err: any) => {
+          console.error("[RetrievalEngine] News failed:", err?.message);
+          return [];
+        })
+      : Promise.resolve([]);
+
+    const [factCheck, healthResearch, newsArticles] = await Promise.all([
+      factCheckPromise,
+      pubMedPromise,
+      newsPromise,
     ]);
 
-    return {
-      factCheck: factCheckRes,
-      healthResearch: healthRes,
-      newsArticles: newsRes,
-    };
+    return { factCheck, healthResearch, newsArticles };
   }
 }

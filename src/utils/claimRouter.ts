@@ -1,42 +1,50 @@
 // src/utils/claimRouter.ts
 
-export type VerificationRoute = "health_science" | "news_politics" | "general";
+export type VerificationRoute = "health" | "science" | "news_politics" | "finance" | "general";
 
 /**
  * Synchronous claim routing utility.
- * Categorizes claims and maps them to clear verification routing paths
- * matching original checks exactly.
+ * Maps a classification category to the correct set of retrieval sources.
+ *
+ * Routing table (per Phase 5 spec):
+ *   health    → PubMed only
+ *   science   → PubMed + FactCheck
+ *   politics  → FactCheck + News
+ *   news      → FactCheck + News
+ *   finance   → FactCheck + News
+ *   tech/gen  → FactCheck only
  */
 export class ClaimRouter {
-  /**
-   * Maps a classification category to a modular routing path.
-   */
   static determineRoute(category: string): VerificationRoute {
     const cat = (category || "").toLowerCase().trim();
-    if (cat === "health" || cat === "science") {
-      return "health_science";
-    } else if (cat === "news" || cat === "politics") {
-      return "news_politics";
-    } else {
-      return "general";
-    }
+    if (cat === "health") return "health";
+    if (cat === "science") return "science";
+    if (cat === "politics" || cat === "news") return "news_politics";
+    if (cat === "finance") return "finance";
+    return "general";
   }
 
-  /**
-   * Checks if the given category should query health/academic databases (PubMed).
-   * Exact match of original logic: category === "health" || category === "science"
-   */
+  /** True if category should query PubMed (health or science only). */
   static shouldSearchPubMed(category: string): boolean {
     const cat = (category || "").toLowerCase().trim();
     return cat === "health" || cat === "science";
   }
 
   /**
-   * Checks if the given category should query news/general reporting databases (Google News).
-   * Exact match of original logic: category !== "health"
+   * True if category should query Google Fact Check Tools.
+   * Health is PubMed-only — FactCheck is NOT used for health claims.
+   */
+  static shouldSearchFactCheck(category: string): boolean {
+    const cat = (category || "").toLowerCase().trim();
+    return cat !== "health";
+  }
+
+  /**
+   * True if category should query Google News RSS.
+   * News is only relevant for politics, news, and finance — NOT health or science.
    */
   static shouldSearchNews(category: string): boolean {
     const cat = (category || "").toLowerCase().trim();
-    return cat !== "health";
+    return cat === "politics" || cat === "news" || cat === "finance";
   }
 }
