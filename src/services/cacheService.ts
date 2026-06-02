@@ -9,8 +9,7 @@
 //
 // Goal: 100 videos → reuse previous narrative analyses whenever possible.
 
-import type { NarrativeAnalysis, NarrativeCacheEntry, EvidenceBundle, EmbeddingVector } from '../types';
-import { cosineSimilarity } from '../utils/semanticEmbedder';
+import type { NarrativeAnalysis, NarrativeCacheEntry, EvidenceBundle } from '../types';
 
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 const CACHE_PREFIX_VIDEO = 'credlens_narrative_';
@@ -19,10 +18,8 @@ const DB_NAME = 'credlens-narrative-db';
 const DB_VERSION = 1;
 const STORE_NAME = 'narratives';
 
-// Semantic similarity threshold for cache hits
-const SIMILARITY_THRESHOLD = 0.85;
-
 export class CacheService {
+
   // L1 Cache: In-memory
   private static l1Cache = new Map<string, NarrativeCacheEntry>();
 
@@ -164,61 +161,7 @@ export class CacheService {
     return null;
   }
 
-  // ── Semantic similarity lookup ─────────────────────────────────────────────
 
-  /**
-   * Search for a semantically similar narrative in the cache.
-   * Compares the embedding against all cached embeddings using cosine similarity.
-   *
-   * Returns the cached analysis if similarity > SIMILARITY_THRESHOLD.
-   * This enables reuse across different videos with similar narratives.
-   */
-  static async findSimilarNarrative(
-    embedding: EmbeddingVector
-  ): Promise<NarrativeAnalysis | null> {
-    // Check if embedding is valid (not a zero vector)
-    if (embedding.every(v => v === 0)) return null;
-
-    const now = Date.now();
-    let bestMatch: NarrativeCacheEntry | null = null;
-    let bestSimilarity = 0;
-
-    // Search L1 first (fast)
-    for (const [, entry] of this.l1Cache) {
-      if (now - entry.timestamp > CACHE_TTL_MS) continue;
-      if (!entry.embedding || entry.embedding.length === 0) continue;
-
-      const sim = cosineSimilarity(embedding, entry.embedding);
-      if (sim > bestSimilarity) {
-        bestSimilarity = sim;
-        bestMatch = entry;
-      }
-    }
-
-    // If L1 didn't find a good match, search L3 (IndexedDB)
-    if (bestSimilarity < SIMILARITY_THRESHOLD) {
-      const allEntries = await this.getAllFromDB();
-      for (const { entry } of allEntries) {
-        if (now - entry.timestamp > CACHE_TTL_MS) continue;
-        if (!entry.embedding || entry.embedding.length === 0) continue;
-
-        const sim = cosineSimilarity(embedding, entry.embedding);
-        if (sim > bestSimilarity) {
-          bestSimilarity = sim;
-          bestMatch = entry;
-        }
-      }
-    }
-
-    if (bestMatch && bestSimilarity >= SIMILARITY_THRESHOLD) {
-      console.log(
-        `[CacheService] Semantic cache hit! Similarity: ${bestSimilarity.toFixed(3)} >= ${SIMILARITY_THRESHOLD}`
-      );
-      return bestMatch.analysis;
-    }
-
-    return null;
-  }
 
   // ── Store ──────────────────────────────────────────────────────────────────
 
@@ -227,16 +170,18 @@ export class CacheService {
    */
   static async set(
     videoId: string,
-    embedding: EmbeddingVector,
+    transcriptLength: number,
+    analyzedAtProgress: number,
     analysis: NarrativeAnalysis,
     evidence: EvidenceBundle
   ): Promise<void> {
     const key = `${CACHE_PREFIX_VIDEO}${videoId}`;
     const entry: NarrativeCacheEntry = {
-      embedding,
       analysis,
       evidence,
       timestamp: Date.now(),
+      transcriptLength,
+      analyzedAtProgress,
     };
 
     // L1

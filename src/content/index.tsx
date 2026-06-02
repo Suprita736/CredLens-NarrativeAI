@@ -22,6 +22,10 @@ const YouTubeShortsDetector = () => {
   const processedVideoRef = useRef<string | null>(null);
   const reconnectingRef = useRef(false);
 
+  const lastAnalyzedProgressRef = useRef<number>(0);
+  const lastAnalyzedLengthRef = useRef<number>(0);
+  const lastAnalyzedAtEndRef = useRef<boolean>(false);
+
   // 1. Establish long-lived Port connection with Background Service Worker
   useEffect(() => {
     const connectPort = () => {
@@ -108,6 +112,9 @@ const YouTubeShortsDetector = () => {
     swipeLockRef.current = true;
     CaptionExtractor.reset();
     processedVideoRef.current = null;
+    lastAnalyzedProgressRef.current = 0;
+    lastAnalyzedLengthRef.current = 0;
+    lastAnalyzedAtEndRef.current = false;
 
     setActiveVideo({
       videoId,
@@ -123,41 +130,34 @@ const YouTubeShortsDetector = () => {
   };
 
   // Send stabilized transcript to Background Service Worker
-  const triggerBackgroundVerification = (videoId: string) => {
-    if (processedVideoRef.current === videoId) {
-      console.log('[Content] Video already analyzed.');
-      return;
-    }
-
+  const triggerBackgroundVerification = (videoId: string, transcript: string, currentProgress: number) => {
     if (!portRef.current) {
       console.warn('[Content] Port not established.');
-      analysisTriggered.current = false;
       return;
     }
 
-    // Use the stabilizer's clean transcript
-    const cleanTranscript = stabilizerRef.current.getCleanTranscript();
-    if (!cleanTranscript || cleanTranscript.split(/\s+/).length < 15) {
+    if (transcript.split(/\s+/).length < 15) {
       console.log('[Content] Transcript too short after cleaning.');
-      analysisTriggered.current = false;
       return;
     }
 
     console.log(
-      `[Content] Sending to background (${cleanTranscript.split(/\s+/).length} words): ` +
-      `"${cleanTranscript.substring(0, 90)}…"`
+      `[Content] Sending to background (${transcript.split(/\s+/).length} words): ` +
+      `"${transcript.substring(0, 90)}…"`
     );
 
     try {
+      setActiveVideo(prev => prev ? { ...prev, status: 'loading' } : null);
+      
       portRef.current.postMessage({
         action: 'VERIFY_TRANSCRIPT',
         videoId,
-        transcript: cleanTranscript,
+        transcript,
+        transcriptLength: transcript.length,
+        currentProgress
       });
-      processedVideoRef.current = videoId;
     } catch (err) {
       console.error('[Content] Port error sending verification request:', err);
-      analysisTriggered.current = false;
     }
   };
 
@@ -169,28 +169,83 @@ const YouTubeShortsDetector = () => {
 
       // Feed into stabilizer (handles dedup internally)
       stabilizerRef.current.addSegment(text);
-
-      // Check if we have enough content and watch time
-      const elapsedWatchTime = Date.now() - watchStartRef.current;
-      if (
-        !analysisTriggered.current &&
-        !activeVideo.processed &&
-        stabilizerRef.current.hasMinimumContent() &&
-        elapsedWatchTime >= 3000
-      ) {
-        analysisTriggered.current = true;
-
-        // Wait for stability before sending
-        stabilizerRef.current.waitForStability((stableTranscript) => {
-          console.log(
-            `[Content] Transcript stabilized with ${stableTranscript.split(/\s+/).length} words.`
-          );
-          triggerBackgroundVerification(activeVideo.videoId);
-        });
-      }
     });
 
     return () => observer.disconnect();
+  }, [activeVideo]);
+
+  // 4. Watch completion and Cache refresh gate
+  useEffect(() => {
+    if (!activeVideo) return;
+
+    const interval = setInterval(() => {
+      if (swipeLockRef.current) return;
+      // Do not trigger if currently verifying
+      if (activeVideo.status === 'loading') return;
+
+      const videos = document.querySelectorAll('video');
+      let activeVid: HTMLVideoElement | null = null;
+      let ratio = 0;
+      let isEnded = false;
+
+      for (const v of Array.from(videos)) {
+        if (v.duration > 0 && !v.paused) {
+           activeVid = v;
+           ratio = v.currentTime / v.duration;
+           isEnded = v.ended;
+           break;
+        } else if (v.duration > 0 && v.ended) {
+           activeVid = v;
+           ratio = 1;
+           isEnded = true;
+           break;
+        }
+      }
+
+      if (!activeVid) return;
+
+      const currentLength = stabilizerRef.current.getCleanTranscript().length;
+
+      // Gate conditions:
+      const hitGate = ratio >= 0.85 || isEnded;
+      if (!hitGate) return;
+
+      // Determine if this is the first analysis OR a cache refresh
+      const isFirstAnalysis = lastAnalyzedProgressRef.current === 0 && !lastAnalyzedAtEndRef.current;
+      
+      let shouldTrigger = false;
+      
+      if (isFirstAnalysis) {
+        shouldTrigger = true;
+      } else {
+        // Cache refresh logic
+        // 1. Natural end (and we haven't analyzed at end yet)
+        if (isEnded && !lastAnalyzedAtEndRef.current) {
+          shouldTrigger = true;
+        } 
+        // 2. Continued watching: progress increased AND transcript increased > 15%
+        else if (
+          ratio > lastAnalyzedProgressRef.current && 
+          currentLength > lastAnalyzedLengthRef.current * 1.15
+        ) {
+          shouldTrigger = true;
+        }
+      }
+
+      if (shouldTrigger && stabilizerRef.current.hasMinimumContent()) {
+        stabilizerRef.current.waitForStability((stableTranscript) => {
+          console.log(`[Content] Watch gate met. Progress: ${ratio.toFixed(2)}, Ended: ${isEnded}. Triggering verification.`);
+          
+          lastAnalyzedProgressRef.current = ratio;
+          lastAnalyzedLengthRef.current = stableTranscript.length;
+          if (isEnded) lastAnalyzedAtEndRef.current = true;
+
+          triggerBackgroundVerification(activeVideo.videoId, stableTranscript, ratio);
+        });
+      }
+    }, 1000);
+
+    return () => clearInterval(interval);
   }, [activeVideo]);
 
   if (!activeVideo) return null;

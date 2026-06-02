@@ -47,10 +47,10 @@ chrome.runtime.onConnect.addListener((port) => {
   let activeVideoId: string | null = null;
 
   port.onMessage.addListener(async (message: BackgroundMessage) => {
-    const { action, videoId, transcript } = message;
+    const { action, videoId, transcript, transcriptLength = 0, currentProgress = 0 } = message;
     if (action === 'VERIFY_TRANSCRIPT' && videoId && transcript) {
       activeVideoId = videoId;
-      await runNarrativePipeline(videoId, transcript, port);
+      await runNarrativePipeline(videoId, transcript, transcriptLength, currentProgress, port);
     } else if (action === 'CANCEL_VERIFICATION' && videoId) {
       console.log(`[Background] Cancel requested for ${videoId}`);
       QueueManager.cancel(videoId);
@@ -68,6 +68,8 @@ chrome.runtime.onConnect.addListener((port) => {
 async function runNarrativePipeline(
   videoId: string,
   transcript: string,
+  transcriptLength: number,
+  currentProgress: number,
   port: chrome.runtime.Port
 ): Promise<void> {
   postResponse(port, { status: 'loading', videoId });
@@ -105,7 +107,7 @@ async function runNarrativePipeline(
       const noClaimsResult = buildNoClaimsVerdict(
         'No verifiable claims detected in this video.'
       );
-      await CacheService.set(videoId, [], noClaimsResult, {});
+      await CacheService.set(videoId, transcriptLength, currentProgress, noClaimsResult, {});
       postResponse(port, { status: 'completed', videoId, analysis: noClaimsResult });
       QueueManager.complete(videoId);
       return;
@@ -123,15 +125,7 @@ async function runNarrativePipeline(
 
     if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
 
-    // ── Step 5: Semantic cache check ────────────────────────────────────────
-    const semanticMatch = await CacheService.findSimilarNarrative(narrative.embedding);
-    if (semanticMatch) {
-      console.log('[Background] Semantic cache hit! Reusing previous analysis.');
-      await CacheService.set(videoId, narrative.embedding, semanticMatch, {});
-      postResponse(port, { status: 'completed', videoId, analysis: semanticMatch });
-      QueueManager.complete(videoId);
-      return;
-    }
+
 
     if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
 
@@ -197,7 +191,7 @@ async function runNarrativePipeline(
     if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
 
     // ── Step 9: Cache and respond ───────────────────────────────────────────
-    await CacheService.set(videoId, narrative.embedding, analysis, evidence);
+    await CacheService.set(videoId, transcriptLength, currentProgress, analysis, evidence);
     postResponse(port, { status: 'completed', videoId, analysis });
 
   } catch (error: any) {

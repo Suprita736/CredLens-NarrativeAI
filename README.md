@@ -1,224 +1,135 @@
 # CredLens NarrativeAI
 
-## Phase 1 – Narrative Verification Foundation
+## Narrative Verification Foundation
 
-CredLens NarrativeAI verifies the overall narrative of a YouTube Short rather than isolated sentences or keyword-matched claims.
+CredLens NarrativeAI is chrome extension that verifies the overall narrative of a YouTube Short rather than isolated sentences or keyword-matched claims.
 
-The goal is to reduce API dependency, improve contextual understanding, and provide evidence-based narrative verification.
-
----
-
-## Vision
-
-Most misinformation is communicated through narratives rather than individual claims.
-
-Traditional fact-checkers attempt to verify isolated statements.
-
-CredLens instead attempts to understand:
-
-* What story the creator is telling
-* What conclusion the viewer is expected to believe
-* Whether the overall narrative is supported by evidence
+The objective is to verify the complete narrative.
 
 Example:
 
-Video narrative:
+Transcript: 
 
-"Soy products, flax seeds and cruciferous vegetables damage hormonal health."
+"Leaky gut causes eczema.
+Leaky gut causes rosacea.
+Ghee repairs gut lining."
 
-CredLens output:
+Expected narrative:
 
-"The video largely exaggerates the hormonal risks of common foods. Current evidence does not support the claim that moderate soy consumption causes estrogen dominance, and evidence for hormonal harm from flax seeds or cruciferous vegetables is weak."
+"The creator argues that gut dysfunction causes skin disease and that dietary interventions such as ghee can restore gut health."
+
+Verification operates on the narrative, not transcript fragments.
 
 ---
 
-## Architecture
+## Runtime Flow
 
 YouTube Short
 ↓
-Transcript Collection
+Transcript Collector
+↓
+Watch Completion Gate (85%)
 ↓
 Transcript Stabilizer
 ↓
 Narrative Engine
 ↓
-Narrative Cache Check
+Video ID Cache Check
 ↓
 Evidence Retrieval
 ↓
 Verdict Builder
 ↓
-Credibility Overlay
+Overlay
 
 ---
 
-## Processing Flow
-
-### Step 1 — Transcript Collection
-
-Captions are collected while the user watches the Short.
-
-No verification occurs immediately.
-
-This prevents incomplete narratives from being analyzed.
-
----
-
-### Step 2 — Watch Completion Gate
+## Watch Completion Gate
 
 Verification begins only when:
 
-* the video finishes, or
-* the user watches at least 80–90% of the Short
+1. The Short finishes naturally
+OR
+2. The user has watched at least 85% of the Short
 
-This ensures the narrative is complete before analysis begins.
+While the Short is actively playing, the system collects captions and stabilizes the transcript, but it does NOT generate embeddings, perform retrieval, or query any APIs (PubMed, Fact Check, News, Gemini, OpenRouter).
 
----
+This prevents verification from operating on incomplete narratives.
 
-### Step 3 — Transcript Stabilization
-
-The Transcript Stabilizer removes:
-
-* duplicate caption updates
-* partial caption fragments
-* rapidly changing intermediate text
-
-Result:
-
-A stable transcript representing the full video.
+If the user continues watching the same Short after the 85% gate and the transcript grows significantly (>15%), the cache is refreshed with a new analysis to ensure the final representation is fully complete.
 
 ---
 
-### Step 4 — Narrative Engine
+## Cache Strategy
 
-The Narrative Engine transforms the transcript into a narrative representation.
+### Phase 1
 
-Example:
-
-Transcript:
-
-"Leaky gut causes eczema and rosacea. Ghee repairs the gut lining."
-
-Narrative Representation:
-
-"The creator argues that gut dysfunction causes skin disease and that dietary interventions such as ghee can restore gut health."
-
-The system analyzes meaning rather than isolated keywords.
-
----
-
-### Step 5 — Narrative Cache
-
-Before retrieval, CredLens checks whether this narrative has already been analyzed.
+Uses **Video ID** as the primary cache key.
 
 Cache stores:
+* `videoId`
+* `verdict`
+* `evidence`
+* `narrative`
+* `transcriptLength`
+* `analyzedAtProgress`
 
-* video ID
-* narrative fingerprint
-* evidence bundle
-* verdict
+Reasoning:
+* Embeddings can accidentally merge opposite narratives.
+* Transcript hashes change over time as more captions arrive.
+* Video IDs are stable.
 
-If a match exists:
-
-Retrieval is skipped.
-
-Results are returned instantly.
-
----
-
-### Step 6 — Evidence Retrieval
-
-Retrieval is driven by the narrative, not by sentence fragments.
-
-Sources:
-
-* PubMed
-* Google Fact Check
-* Google News RSS
-
-Goal:
-
-Find evidence relevant to the narrative as a whole.
+Workflow:
+`videoId` → Cache lookup
+* **If found**: return cached verdict instantly, skip retrieval, skip AI, skip processing.
+* **If not found**: run full verification, store result by `videoId`.
 
 ---
 
-### Step 7 — Verdict Builder
+## Future Roadmap
 
-The Verdict Builder compares:
+### Phase 1
+* Video-level cache
+* Narrative verification
+* Retrieval-first architecture
 
-Narrative
-vs
-Retrieved Evidence
+### Phase 2
+* Global cache service
+* Shared verdicts across devices
 
-Possible outcomes:
+Example:
+User A watches a Short
+↓
+verification runs
+↓
+result stored
 
-* Supported by evidence
-* Partially supported
-* Evidence is mixed
-* Not supported by evidence
-* Exaggerated claim
+User B watches same Short on another device
+↓
+result returned instantly
 
-Verdicts are generated locally whenever possible.
-
----
-
-### Step 8 — Fallback AI
-
-Gemini and OpenRouter are optional.
-
-They are used only when:
-
-* evidence confidence is extremely low
-* retrieved sources conflict heavily
-* a local verdict cannot be generated
-
-Normal operation should not depend on either service.
+### Phase 3
+* Narrative graph
+* Cross-platform narrative reuse
+* Narrative clustering
 
 ---
 
-## Caching Strategy
+## Processing Steps
 
-### Local Cache
+### 1. Transcript Collection & Stabilization
+Captions are collected while the user watches. The Transcript Stabilizer handles duplicates and formatting, keeping a clean representation.
 
-Stores results on-device.
+### 2. Narrative Engine
+Transforms the full transcript into a narrative representation using semantic embeddings, avoiding basic keyword matching.
 
-Used for:
+### 3. Video ID Cache Check
+Searches the local database for existing analysis for the current video.
 
-* repeated views
-* browser refreshes
-* revisiting Shorts
+### 4. Evidence Retrieval
+Driven by the entire narrative rather than sentence fragments, pulling from PubMed, Google Fact Check, and Google News RSS.
 
-### Future Global Cache
+### 5. Verdict Builder
+Locally compares the Narrative vs. Retrieved Evidence to generate verdicts like "Supported by evidence", "Evidence is mixed", or "Not supported by evidence". 
 
-Planned Phase 2 feature.
-
-Allows identical Shorts watched on different devices to reuse previously generated narrative verdicts.
-
----
-
-## Core Components
-
-* transcriptStabilizer.ts
-* semanticEmbedder.ts
-* narrativeEngine.ts
-* retrievalEngine.ts
-* verdictBuilder.ts
-* cacheService.ts
-
----
-
-## Current Phase Limitations
-
-Phase 1 focuses on:
-
-* narrative representation
-* retrieval-first verification
-* local caching
-* evidence-driven verdicts
-
-Future phases will improve:
-
-* semantic contradiction detection
-* cross-video narrative clustering
-* global narrative caching
-* narrative reasoning accuracy
+Fallback AI (Gemini / OpenRouter) is only triggered if confidence is extremely low and API keys are provided.

@@ -119,10 +119,11 @@ export interface NarrativeAnalysis {
 // ── Semantic Cache Entry ───────────────────────────────────────────────────────
 
 export interface NarrativeCacheEntry {
-  embedding: EmbeddingVector;
   analysis: NarrativeAnalysis;
   evidence: EvidenceBundle;
   timestamp: number;
+  transcriptLength: number;
+  analyzedAtProgress: number;
 }
 
 // ── Extension Messaging ────────────────────────────────────────────────────────
@@ -139,6 +140,8 @@ export interface BackgroundMessage {
   action: 'VERIFY_TRANSCRIPT' | 'CANCEL_VERIFICATION';
   videoId?: string;
   transcript?: string;
+  transcriptLength?: number;
+  currentProgress?: number;
 }
 
 export interface BackgroundResponse {
