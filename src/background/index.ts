@@ -115,12 +115,27 @@ async function runNarrativePipeline(
 
     if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
 
+    // ── Step 3.5: Watch Gate Check ───────────────────────────────────────────
+    const watchPercentage = Math.round(currentProgress * 100);
+    const watchGateSatisfied = watchPercentage >= 85 || watchPercentage >= 99; // 99+ is treated as ended/completed
+    
+    if (!watchGateSatisfied) {
+      console.log(`[WatchGate] Verification blocked (<85%)`);
+      return;
+    }
+    
+    if (watchPercentage >= 99) {
+      console.log(`[WatchGate] Final verification triggered at completion`);
+    } else {
+      console.log(`[WatchGate] Verification triggered at 85%`);
+    }
+
     // ── Step 4: Build narrative representation ──────────────────────────────
     console.log('[Background] Building narrative representation...');
     const narrative = await buildNarrative(transcript);
     console.log(
       `[Background] Narrative built: ${narrative.themes.length} themes, ` +
-      `query="${narrative.retrievalQuery.slice(0, 80)}…"`
+      `queries=${narrative.retrievalQueries.length}`
     );
 
     if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
@@ -132,7 +147,7 @@ async function runNarrativePipeline(
     // ── Step 6: Narrative-driven retrieval ───────────────────────────────────
     console.log('[Background] ==> Narrative retrieval START');
     const evidence = await RetrievalEngine.retrieve(
-      narrative.retrievalQuery,
+      narrative.retrievalQueries,
       googleApiKey,
       signal
     );
@@ -141,7 +156,7 @@ async function runNarrativePipeline(
 
     // ── Step 7: Local verdict builder ───────────────────────────────────────
     console.log('[Background] Building local verdict from evidence...');
-    let analysis: NarrativeAnalysis = buildVerdict(evidence, narrative.retrievalQuery);
+    let analysis: NarrativeAnalysis = buildVerdict(evidence, narrative);
     console.log(
       `[Background] Local verdict: "${analysis.verdict}", confidence=${analysis.confidence}`
     );
@@ -155,7 +170,7 @@ async function runNarrativePipeline(
           const { GeminiService } = await import('../services/geminiService');
           const gemini = new GeminiService(geminiApiKey);
           const geminiResult = await gemini.synthesizeNarrative(
-            narrative.retrievalQuery,
+            narrative.retrievalQueries.join(', '),
             evidence,
             signal
           );
@@ -174,7 +189,7 @@ async function runNarrativePipeline(
           const { OpenRouterProvider } = await import('../services/openRouterService');
           const openRouter = new OpenRouterProvider(openRouterApiKey);
           const orResult = await openRouter.analyzeNarrative(
-            narrative.retrievalQuery,
+            narrative.retrievalQueries.join(', '),
             evidence
           );
           if (orResult.confidence && orResult.confidence > analysis.confidence) {

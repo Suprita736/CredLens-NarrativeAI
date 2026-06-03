@@ -30,50 +30,61 @@ export class RetrievalEngine {
    * @param signal - AbortSignal for cancellation
    */
   static async retrieve(
-    narrativeQuery: string,
+    narrativeQueries: string[],
     googleApiKey: string,
     signal?: AbortSignal
   ): Promise<EvidenceBundle> {
-    console.log(`[RetrievalEngine] Narrative query: "${narrativeQuery.slice(0, 120)}…"`);
+    console.log(`[RetrievalEngine] Processing ${narrativeQueries.length} queries.`);
 
-    // Run all three sources concurrently with the same narrative query
-    const factCheckPromise: Promise<any> = googleApiKey
-      ? retryWithDelay(
-          () => FactCheckService.verifyClaim(narrativeQuery, googleApiKey, signal),
-          1, 1000, signal
-        ).catch((err: any) => {
-          console.error('[RetrievalEngine] FactCheck failed:', err?.message);
-          return null;
-        })
-      : Promise.resolve(null);
+    const factChecks: any[] = [];
+    const healthResearch: any[] = [];
+    const newsArticles: any[] = [];
 
-    const pubMedPromise: Promise<any[]> = retryWithDelay(
-      () => HealthService.searchPubMed(narrativeQuery, signal),
-      1, 1000, signal
-    ).catch((err: any) => {
-      console.error('[RetrievalEngine] PubMed failed:', err?.message);
-      return [];
-    });
+    for (const query of narrativeQueries) {
+      console.log(`[RetrievalEngine] Querying: "${query}"`);
+      
+      const factCheckPromise = googleApiKey
+        ? retryWithDelay(
+            () => FactCheckService.verifyClaim(query, googleApiKey, signal),
+            1, 1000, signal
+          ).catch((err: any) => {
+            console.error('[RetrievalEngine] FactCheck failed:', err?.message);
+            return null;
+          })
+        : Promise.resolve(null);
 
-    const newsPromise: Promise<any[]> = retryWithDelay(
-      () => NewsService.searchNews(narrativeQuery, signal),
-      1, 1000, signal
-    ).catch((err: any) => {
-      console.error('[RetrievalEngine] News failed:', err?.message);
-      return [];
-    });
+      const pubMedPromise = retryWithDelay(
+        () => HealthService.searchPubMed(query, signal),
+        1, 1000, signal
+      ).catch((err: any) => {
+        console.error('[RetrievalEngine] PubMed failed:', err?.message);
+        return [];
+      });
 
-    const [factCheck, healthResearch, newsArticles] = await Promise.all([
-      factCheckPromise,
-      pubMedPromise,
-      newsPromise,
-    ]);
+      const newsPromise = retryWithDelay(
+        () => NewsService.searchNews(query, signal),
+        1, 1000, signal
+      ).catch((err: any) => {
+        console.error('[RetrievalEngine] News failed:', err?.message);
+        return [];
+      });
+
+      const [fc, hr, na] = await Promise.all([factCheckPromise, pubMedPromise, newsPromise]);
+      
+      if (fc) factChecks.push(fc);
+      if (hr && hr.length) healthResearch.push(...hr);
+      if (na && na.length) newsArticles.push(...na);
+    }
 
     console.log(
-      `[RetrievalEngine] Results: factCheck=${!!factCheck}, ` +
+      `[RetrievalEngine] Results: factCheck=${factChecks.length}, ` +
       `pubmed=${healthResearch.length}, news=${newsArticles.length}`
     );
 
-    return { factCheck, healthResearch, newsArticles };
+    return { 
+      factCheck: factChecks[0] || null, // Just take the first valid factcheck for now
+      healthResearch: healthResearch.slice(0, 10), // Limit total pooled results
+      newsArticles: newsArticles.slice(0, 10)
+    };
   }
 }

@@ -150,13 +150,13 @@ const CredibilityOverlay: React.FC<Props> = ({ analysis, onClose }) => {
           </div>
 
           {/* Factual Claim Detected */}
-          {analysis.retrievalQuery && (
+          {analysis.retrievalQueries && analysis.retrievalQueries.length > 0 && (
             <div className="mb-4 bg-slate-900/50 border border-slate-900 p-3 rounded-xl">
               <span className="text-[9px] uppercase tracking-wider font-bold text-slate-500">
                 Narrative Focus
               </span>
               <p className="text-xs text-slate-300 mt-1 italic font-medium leading-relaxed">
-                "{analysis.retrievalQuery}"
+                "{analysis.retrievalQueries.join(' • ')}"
               </p>
             </div>
           )}
@@ -254,7 +254,7 @@ const CredibilityOverlay: React.FC<Props> = ({ analysis, onClose }) => {
               <span className="text-[9px] uppercase tracking-wider font-bold text-slate-500">
                 Evidence Summary
               </span>
-              <p className="text-xs text-slate-300 mt-1 leading-relaxed">
+              <p className="text-xs text-slate-300 mt-1 leading-relaxed whitespace-pre-wrap font-medium">
                 {analysis.explanation || "No supporting external reports could be found to verify this statement."}
               </p>
             </div>

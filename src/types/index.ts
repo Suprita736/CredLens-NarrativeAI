@@ -34,8 +34,10 @@ export interface NarrativeRepresentation {
   embedding: EmbeddingVector;
   /** Key themes within the narrative. */
   themes: NarrativeTheme[];
-  /** Generated retrieval query derived from narrative meaning. */
-  retrievalQuery: string;
+  /** Generated retrieval queries derived from narrative claims. */
+  retrievalQueries: string[];
+  /** Claims extracted from the narrative. */
+  claimsIdentified: string[];
   /** Timestamp of creation. */
   timestamp: number;
 }
@@ -96,8 +98,10 @@ export interface NarrativeAnalysis {
   explanation: string;
   /** Additional context for the user. */
   context?: string;
-  /** The retrieval query used. */
-  retrievalQuery?: string;
+  /** The retrieval queries used. */
+  retrievalQueries?: string[];
+  /** The claims identified. */
+  claimsIdentified?: string[];
   /** Whether this is satirical or entertainment content. */
   isSatire: boolean;
 

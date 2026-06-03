@@ -18,7 +18,7 @@ const YouTubeShortsDetector = () => {
   const stabilizerRef = useRef(new TranscriptStabilizer({ minWords: 40, stabilityDelayMs: 2000 }));
   const analysisTriggered = useRef(false);
   const portRef = useRef<chrome.runtime.Port | null>(null);
-  const watchStartRef = useRef<number>(0);
+
   const processedVideoRef = useRef<string | null>(null);
   const reconnectingRef = useRef(false);
 
@@ -92,19 +92,10 @@ const YouTubeShortsDetector = () => {
   }, [activeVideo]);
 
   const resetAndStartNewVideo = (videoId: string) => {
-    watchStartRef.current = Date.now();
+    console.log(`[Transcript] Reset for new video: ${videoId}`);
 
-    // Cancel pending work for previous video
-    if (activeVideo?.videoId && portRef.current) {
-      try {
-        portRef.current.postMessage({
-          action: 'CANCEL_VERIFICATION',
-          videoId: activeVideo.videoId,
-        });
-      } catch (err) {
-        console.warn('[Content] Port failed to send cancel message:', err);
-      }
-    }
+    // Do NOT send CANCEL_VERIFICATION.
+    // If verification started, let it finish and cache the result in the background.
 
     // Reset state
     stabilizerRef.current.reset();
@@ -141,10 +132,8 @@ const YouTubeShortsDetector = () => {
       return;
     }
 
-    console.log(
-      `[Content] Sending to background (${transcript.split(/\s+/).length} words): ` +
-      `"${transcript.substring(0, 90)}…"`
-    );
+    console.log(`[Transcript] Final Transcript Length: ${transcript.length}`);
+    console.log(`[Transcript] Final Transcript Preview: ${transcript.substring(0, 500)}`);
 
     try {
       setActiveVideo(prev => prev ? { ...prev, status: 'loading' } : null);
@@ -208,7 +197,13 @@ const YouTubeShortsDetector = () => {
 
       // Gate conditions:
       const hitGate = ratio >= 0.85 || isEnded;
-      if (!hitGate) return;
+      if (!hitGate) {
+        if (Math.random() < 0.2) {
+          // Sample logging to avoid spamming every second
+          console.log(`[WatchGate] Progress: ${Math.round(ratio * 100)}%`);
+        }
+        return;
+      }
 
       // Determine if this is the first analysis OR a cache refresh
       const isFirstAnalysis = lastAnalyzedProgressRef.current === 0 && !lastAnalyzedAtEndRef.current;
@@ -217,11 +212,17 @@ const YouTubeShortsDetector = () => {
       
       if (isFirstAnalysis) {
         shouldTrigger = true;
+        if (isEnded) {
+          console.log(`[WatchGate] Final verification triggered at completion`);
+        } else {
+          console.log(`[WatchGate] Verification triggered at 85%`);
+        }
       } else {
         // Cache refresh logic
         // 1. Natural end (and we haven't analyzed at end yet)
         if (isEnded && !lastAnalyzedAtEndRef.current) {
           shouldTrigger = true;
+          console.log(`[WatchGate] Final verification triggered at completion`);
         } 
         // 2. Continued watching: progress increased AND transcript increased > 15%
         else if (
@@ -229,6 +230,7 @@ const YouTubeShortsDetector = () => {
           currentLength > lastAnalyzedLengthRef.current * 1.15
         ) {
           shouldTrigger = true;
+          console.log(`[WatchGate] Verification triggered for cache refresh`);
         }
       }
 

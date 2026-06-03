@@ -6,28 +6,61 @@ export class CaptionExtractor {
   }
 
   static getTranscript(): string {
-    const captionSegments = document.querySelectorAll(
-      ".ytp-caption-segment"
+    const containers = document.querySelectorAll(".ytp-caption-window-container");
+    const activeContainer = Array.from(containers).find(
+      (c) => c.getBoundingClientRect().width > 0 && c.getBoundingClientRect().height > 0
     );
+
+    if (containers.length > 1) {
+      console.log("[Transcript] Multiple caption containers detected");
+    }
+
+    if (activeContainer) {
+      console.log("[Transcript] Active caption container found");
+    }
+
+    const root = activeContainer || document;
+    const captionSegments = root.querySelectorAll(".ytp-caption-segment");
 
     if (!captionSegments.length) return "";
 
-    const text = Array.from(captionSegments)
+    const currentText = Array.from(captionSegments)
       .map((segment) => segment.textContent?.trim())
       .filter(Boolean)
       .join(" ")
       .trim();
 
-    // Ignore duplicate updates
-    if (text === this.lastTranscript) {
+    if (!currentText || currentText === this.lastTranscript) {
       return "";
     }
 
-    this.lastTranscript = text;
+    let newPart = currentText;
 
-    console.log("Transcript extracted:", text);
+    if (this.lastTranscript) {
+      if (this.lastTranscript.includes(currentText)) {
+        newPart = "";
+      } else {
+        let maxOverlap = 0;
+        const maxLen = Math.min(this.lastTranscript.length, currentText.length);
+        for (let i = 1; i <= maxLen; i++) {
+          if (this.lastTranscript.slice(-i) === currentText.slice(0, i)) {
+            maxOverlap = i;
+          }
+        }
+        if (maxOverlap > 0) {
+          newPart = currentText.slice(maxOverlap).trim();
+        }
+      }
+    }
 
-    return text;
+    this.lastTranscript = currentText;
+
+    if (newPart) {
+      console.log("Transcript extracted:", newPart);
+      return newPart;
+    }
+
+    return "";
   }
 
   static observeCaptions(

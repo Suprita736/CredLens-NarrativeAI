@@ -68,8 +68,13 @@ function determineVerdict(
   score: EvidenceScore,
   factCheck: FactCheckResult | null
 ): { verdict: NarrativeVerdict; credibility: CredibilityLevel } {
-  // Conflicts → mixed evidence
-  if (score.hasConflicts) {
+  // If retrieval evidence weak -> Insufficient evidence
+  if (score.sourceCount === 0 || score.total < 15) {
+    return { verdict: 'Insufficient evidence', credibility: 'none' };
+  }
+
+  // Conflicts or some support / some contradict -> Mixed evidence
+  if (score.hasConflicts || (score.total >= 15 && score.total < 40)) {
     return { verdict: 'Evidence is mixed', credibility: 'medium' };
   }
 
@@ -85,27 +90,15 @@ function determineVerdict(
     if (v.includes('true') || v.includes('correct') || v.includes('accurate')) {
       return { verdict: 'Supported by evidence', credibility: 'high' };
     }
-    // Neutral factcheck
     return { verdict: 'Evidence is mixed', credibility: 'medium' };
   }
 
-  // Research-based scoring
-  if (score.researchScore >= 30) {
+  // Only return Supported by evidence when strong evidence exists
+  if (score.researchScore >= 30 || score.newsScore >= 30 || score.total >= 40) {
     return { verdict: 'Supported by evidence', credibility: 'high' };
   }
 
-  // News-based scoring
-  if (score.newsScore >= 20) {
-    return { verdict: 'Supported by evidence', credibility: 'high' };
-  }
-
-  // Some evidence but not strong
-  if (score.sourceCount >= 1) {
-    return { verdict: 'Evidence is mixed', credibility: 'medium' };
-  }
-
-  // No evidence at all
-  return { verdict: 'Insufficient evidence', credibility: 'none' };
+  return { verdict: 'Evidence is mixed', credibility: 'medium' };
 }
 
 // ── Explanation templates ──────────────────────────────────────────────────────
@@ -114,61 +107,37 @@ function buildExplanation(
   verdict: NarrativeVerdict,
   factCheck: FactCheckResult | null,
   research: ResearchArticle[],
-  news: NewsArticle[]
+  news: NewsArticle[],
+  summary: string,
+  claims: string[]
 ): string {
-  switch (verdict) {
-    case 'Supported by evidence': {
-      const parts: string[] = [];
-      if (factCheck) {
-        parts.push(`A fact-checking review corroborates the narrative: "${factCheck.explanation}".`);
-      }
-      if (research.length > 0) {
-        parts.push(
-          `${research.length} peer-reviewed ${research.length === 1 ? 'paper' : 'papers'} found ` +
-          `in PubMed support this narrative.`
-        );
-      }
-      if (news.length > 0) {
-        parts.push(
-          `${news.length} credible news ${news.length === 1 ? 'source' : 'sources'} ` +
-          `corroborate this narrative.`
-        );
-      }
-      return parts.join(' ') || 'Available evidence supports the claims made in this video.';
-    }
-
-    case 'Not supported by evidence': {
-      if (factCheck) {
-        return (
-          `A fact-checking review found the claims in this narrative to be inaccurate: ` +
-          `"${factCheck.explanation}". Current scientific evidence does not support these assertions.`
-        );
-      }
-      return 'No trusted sources could verify the claims made in this video. Exercise caution with this information.';
-    }
-
-    case 'Exaggerated claim':
-      return (
-        'The video largely exaggerates its claims. While there may be a kernel of truth, ' +
-        'the assertions as presented are not supported by the weight of current evidence.'
-      );
-
-    case 'Evidence is mixed':
-      return (
-        'Available evidence is mixed regarding the claims in this video. Some sources ' +
-        'partially support the narrative, while others contradict it. Consider consulting ' +
-        'multiple authoritative sources.'
-      );
-
-    case 'Insufficient evidence':
-      return (
-        'No supporting external evidence could be found to verify the claims in this video. ' +
-        'This does not necessarily mean the claims are false, but they could not be verified.'
-      );
-
-    default:
-      return 'No supporting external reports could be found to verify this narrative.';
+  const parts: string[] = [];
+  
+  parts.push(`Narrative Summary:\n"${summary}"\n`);
+  
+  if (claims && claims.length > 0) {
+    parts.push(`Claims Identified:\n${claims.map(c => `- ${c}`).join('\n')}\n`);
   }
+
+  const evidenceSources: string[] = [];
+  if (factCheck) evidenceSources.push(`FactCheck: ${factCheck.source}`);
+  research.forEach(r => evidenceSources.push(`PubMed: ${r.journal}`));
+  news.forEach(n => evidenceSources.push(`News: ${n.source}`));
+
+  if (evidenceSources.length > 0) {
+    parts.push(`Evidence:\n${evidenceSources.map(s => `- ${s}`).join('\n')}\n`);
+  } else {
+    parts.push(`Evidence:\n- None found\n`);
+  }
+
+  let finalVerdictStr: string = verdict;
+  if (verdict === 'Evidence is mixed') finalVerdictStr = 'Mixed evidence found.';
+  else if (verdict === 'Supported by evidence') finalVerdictStr = 'Supported by strong evidence.';
+  else if (verdict === 'Insufficient evidence') finalVerdictStr = 'Insufficient evidence to verify.';
+
+  parts.push(`Verdict:\n${finalVerdictStr}`);
+
+  return parts.join('\n');
 }
 
 function buildContext(
@@ -204,10 +173,8 @@ function computeConfidence(
   score: EvidenceScore,
   verdict: NarrativeVerdict
 ): ConfidenceBreakdown {
-  // Base confidence from evidence score
   let confidence = Math.min(95, Math.max(30, score.total));
 
-  // Scientific support
   let scientificSupport: ConfidenceBreakdown['scientificSupport'] = 'N/A';
   if (score.researchScore > 0) {
     if (score.researchScore >= 30) scientificSupport = 'Strong';
@@ -215,19 +182,16 @@ function computeConfidence(
     else scientificSupport = 'Weak';
   }
 
-  // Evidence strength
   let evidenceStrength: ConfidenceBreakdown['evidenceStrength'] = 'Weak';
   if (score.sourceCount >= 3 || score.total >= 60) evidenceStrength = 'Strong';
   else if (score.sourceCount >= 1) evidenceStrength = 'Moderate';
 
-  // Manipulation risk
   let manipulationRisk: ConfidenceBreakdown['manipulationRisk'] = 'Moderate';
   if (verdict === 'Supported by evidence') manipulationRisk = 'Low';
   else if (verdict === 'Not supported by evidence' || verdict === 'Exaggerated claim') {
     manipulationRisk = 'High';
   }
 
-  // Adjust confidence based on verdict
   if (verdict === 'Not supported by evidence') confidence = Math.max(confidence, 65);
   if (verdict === 'Insufficient evidence') confidence = Math.min(confidence, 40);
 
@@ -236,13 +200,9 @@ function computeConfidence(
 
 // ── Main export ────────────────────────────────────────────────────────────────
 
-/**
- * Build a complete NarrativeAnalysis from evidence alone.
- * No LLM required. Uses evidence-driven templates.
- */
 export function buildVerdict(
   evidence: EvidenceBundle,
-  retrievalQuery: string
+  narrative: { transcript: string, retrievalQueries?: string[], claimsIdentified?: string[] }
 ): NarrativeAnalysis {
   const factCheck = evidence.factCheck ?? null;
   const research = evidence.healthResearch ?? [];
@@ -250,7 +210,13 @@ export function buildVerdict(
 
   const score = scoreEvidence(evidence);
   const { verdict, credibility } = determineVerdict(score, factCheck);
-  const explanation = buildExplanation(verdict, factCheck, research, news);
+  
+  // Extract summary from transcript for the explanation output (up to 200 chars)
+  const summary = narrative.claimsIdentified && narrative.claimsIdentified.length > 0 
+    ? narrative.claimsIdentified.join(' ')
+    : narrative.transcript.slice(0, 200);
+
+  const explanation = buildExplanation(verdict, factCheck, research, news, summary, narrative.claimsIdentified || []);
   const context = buildContext(verdict, research, news);
   const { confidence, scientificSupport, manipulationRisk, evidenceStrength } =
     computeConfidence(score, verdict);
@@ -262,10 +228,10 @@ export function buildVerdict(
     confidence,
     explanation,
     context,
-    retrievalQuery,
+    retrievalQueries: narrative.retrievalQueries || [],
+    claimsIdentified: narrative.claimsIdentified || [],
     isSatire: false,
 
-    // Evidence sub-blocks
     factCheck,
     healthResearch: research.length > 0
       ? { status: 'Scientifically supported', summary: explanation, sources: research }
@@ -274,12 +240,10 @@ export function buildVerdict(
       ? { status: 'Widely reported', summary: explanation, sources: news }
       : null,
 
-    // Confidence breakdown
     scientificSupport,
     manipulationRisk,
     evidenceStrength,
 
-    // Source attribution
     sourceName: factCheck?.source ?? research[0]?.journal ?? news[0]?.source,
     sourceUrl: factCheck?.url ?? research[0]?.url ?? news[0]?.url,
   };
