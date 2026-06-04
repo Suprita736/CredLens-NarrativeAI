@@ -1,12 +1,15 @@
-// src/services/retrievalEngine.ts — CredLens NarrativeAI Phase 1
+// src/services/retrievalEngine.ts — CredLens Narrative Synthesis Architecture
 //
-// Narrative-driven retrieval pipeline.
-// Retrieval operates on the narrative representation, not individual claims.
+// Domain-routed retrieval pipeline.
 //
-// Narrative → retrieval query → evidence
+// Retrieval queries come from NarrativeSynthesisService.buildRetrievalQueries(),
+// which derives them from central_claim + supporting_claims — NOT transcript words.
 //
-// Sources kept: PubMed, Google Fact Check, Google News RSS.
-// All sources receive the narrative-derived query.
+// Domain routing prioritizes sources based on claim_domain:
+//   health/nutrition/medicine → PubMed first, then FactCheck, then News
+//   politics/current_events  → News first, then FactCheck
+//   science/technology       → PubMed + News
+//   default                  → All sources equally
 
 import { FactCheckService } from './factCheckService';
 import { HealthService } from './healthService';
@@ -14,66 +17,85 @@ import { NewsService } from './newsService';
 import { retryWithDelay } from '../utils/retryUtils';
 import type { EvidenceBundle } from '../types';
 
-/**
- * Narrative Retrieval Engine — Phase 1.
- *
- * All three sources are queried with the narrative-derived query.
- * No category-based routing — the narrative itself determines relevance.
- * Each source filters by its own relevance internally.
- */
+type DomainRoute = 'health' | 'politics' | 'science' | 'general';
+
+function classifyDomain(claimDomain: string): DomainRoute {
+  const d = claimDomain.toLowerCase().trim();
+  if (['health', 'nutrition', 'medicine'].includes(d)) return 'health';
+  if (['politics', 'current_events'].includes(d)) return 'politics';
+  if (['science', 'technology'].includes(d)) return 'science';
+  return 'general';
+}
+
 export class RetrievalEngine {
   /**
-   * Retrieve evidence for a narrative representation.
+   * Retrieve evidence for narrative synthesis queries with domain routing.
    *
-   * @param narrativeQuery - The retrieval query derived from the narrative
+   * @param retrievalQueries - Queries derived from synthesis central/supporting claims
+   * @param claimDomain - Domain from NarrativeSynthesis.claim_domain
    * @param googleApiKey - Optional Google API key for Fact Check Tools
    * @param signal - AbortSignal for cancellation
    */
   static async retrieve(
-    narrativeQueries: string[],
+    retrievalQueries: string[],
+    claimDomain: string,
     googleApiKey: string,
     signal?: AbortSignal
   ): Promise<EvidenceBundle> {
-    console.log(`[RetrievalEngine] Processing ${narrativeQueries.length} queries.`);
+    const route = classifyDomain(claimDomain);
+    console.log(`[RetrievalEngine] Domain: "${claimDomain}" → Route: "${route}". Processing ${retrievalQueries.length} queries.`);
 
     const factChecks: any[] = [];
     const healthResearch: any[] = [];
     const newsArticles: any[] = [];
 
-    for (const query of narrativeQueries) {
-      console.log(`[RetrievalEngine] Querying: "${query}"`);
-      
-      const factCheckPromise = googleApiKey
-        ? retryWithDelay(
+    for (const query of retrievalQueries) {
+      if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+
+      console.log(`[RetrievalEngine] Querying: "${query}" (route=${route})`);
+
+      // Build promise list based on domain routing
+      const promises: Promise<void>[] = [];
+
+      // FactCheck — all routes except pure politics-only
+      const shouldFactCheck = route !== 'politics' || googleApiKey;
+      if (shouldFactCheck && googleApiKey) {
+        promises.push(
+          retryWithDelay(
             () => FactCheckService.verifyClaim(query, googleApiKey, signal),
             1, 1000, signal
-          ).catch((err: any) => {
-            console.error('[RetrievalEngine] FactCheck failed:', err?.message);
-            return null;
-          })
-        : Promise.resolve(null);
+          ).then(fc => { if (fc) factChecks.push(fc); })
+           .catch((err: any) => {
+             console.error('[RetrievalEngine] FactCheck failed:', err?.message);
+           })
+        );
+      }
 
-      const pubMedPromise = retryWithDelay(
-        () => HealthService.searchPubMed(query, signal),
-        1, 1000, signal
-      ).catch((err: any) => {
-        console.error('[RetrievalEngine] PubMed failed:', err?.message);
-        return [];
-      });
+      // PubMed — prioritized for health/science, included for general
+      if (route === 'health' || route === 'science' || route === 'general') {
+        promises.push(
+          retryWithDelay(
+            () => HealthService.searchPubMed(query, signal),
+            1, 1000, signal
+          ).then(hr => { if (hr?.length) healthResearch.push(...hr); })
+           .catch((err: any) => {
+             console.error('[RetrievalEngine] PubMed failed:', err?.message);
+           })
+        );
+      }
 
-      const newsPromise = retryWithDelay(
-        () => NewsService.searchNews(query, signal),
-        1, 1000, signal
-      ).catch((err: any) => {
-        console.error('[RetrievalEngine] News failed:', err?.message);
-        return [];
-      });
+      // News — prioritized for politics/current_events, included for all
+      promises.push(
+        retryWithDelay(
+          () => NewsService.searchNews(query, signal),
+          1, 1000, signal
+        ).then(na => { if (na?.length) newsArticles.push(...na); })
+         .catch((err: any) => {
+           console.error('[RetrievalEngine] News failed:', err?.message);
+         })
+      );
 
-      const [fc, hr, na] = await Promise.all([factCheckPromise, pubMedPromise, newsPromise]);
-      
-      if (fc) factChecks.push(fc);
-      if (hr && hr.length) healthResearch.push(...hr);
-      if (na && na.length) newsArticles.push(...na);
+      await Promise.all(promises);
     }
 
     console.log(
@@ -81,10 +103,10 @@ export class RetrievalEngine {
       `pubmed=${healthResearch.length}, news=${newsArticles.length}`
     );
 
-    return { 
-      factCheck: factChecks[0] || null, // Just take the first valid factcheck for now
-      healthResearch: healthResearch.slice(0, 10), // Limit total pooled results
-      newsArticles: newsArticles.slice(0, 10)
+    return {
+      factCheck: factChecks[0] || null,
+      healthResearch: healthResearch.slice(0, 10),
+      newsArticles: newsArticles.slice(0, 10),
     };
   }
 }

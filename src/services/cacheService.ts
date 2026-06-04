@@ -9,7 +9,7 @@
 //
 // Goal: 100 videos → reuse previous narrative analyses whenever possible.
 
-import type { NarrativeAnalysis, NarrativeCacheEntry, EvidenceBundle } from '../types';
+import type { NarrativeAnalysis, NarrativeCacheEntry, NarrativeSynthesis, EvidenceBundle } from '../types';
 
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 const CACHE_PREFIX_VIDEO = 'credlens_narrative_';
@@ -173,10 +173,12 @@ export class CacheService {
     transcriptLength: number,
     analyzedAtProgress: number,
     analysis: NarrativeAnalysis,
-    evidence: EvidenceBundle
+    evidence: EvidenceBundle,
+    synthesis?: NarrativeSynthesis
   ): Promise<void> {
     const key = `${CACHE_PREFIX_VIDEO}${videoId}`;
     const entry: NarrativeCacheEntry = {
+      synthesis,
       analysis,
       evidence,
       timestamp: Date.now(),

@@ -1,48 +1,30 @@
-// src/types/index.ts — CredLens NarrativeAI Phase 1
+// src/types/index.ts — CredLens NarrativeAI — Narrative Synthesis Architecture
+//
+// All types for the Narrative Synthesis pipeline.
+// Dead types removed: NarrativeRepresentation, NarrativeTheme, EmbeddingVector, AIProvider.
 
-// ── Narrative-level types ──────────────────────────────────────────────────────
+// ── Narrative Synthesis (LLM output) ───────────────────────────────────────────
+
+/** Output from the Haiku Narrative Synthesis step. */
+export interface NarrativeSynthesis {
+  narrative_summary: string;
+  central_claim: string;
+  supporting_claims: string[];
+  claim_domain: string;
+  hedging_level: 'none' | 'low' | 'moderate' | 'high';
+}
+
+// ── Verdict types ──────────────────────────────────────────────────────────────
 
 export type CredibilityLevel = 'low' | 'medium' | 'high' | 'none';
 
-/** A narrative verdict generated from evidence analysis. */
 export type NarrativeVerdict =
-  | 'Supported by evidence'
-  | 'Evidence is mixed'
-  | 'Not supported by evidence'
-  | 'Exaggerated claim'
-  | 'Insufficient evidence'
-  | 'Satirical / Entertainment'
-  | 'No verifiable claims detected';
+  | 'Supported'
+  | 'Exaggerated'
+  | 'Misleading'
+  | 'Insufficient Evidence';
 
-/** Semantic embedding vector (Float32). */
-export type EmbeddingVector = number[];
-
-/** A single theme extracted from a narrative. */
-export interface NarrativeTheme {
-  summary: string;
-  embedding: EmbeddingVector;
-}
-
-/**
- * Full narrative representation computed from a transcript.
- * Replaces the old per-claim extraction model.
- */
-export interface NarrativeRepresentation {
-  /** Original transcript text. */
-  transcript: string;
-  /** Semantic embedding of the entire narrative. */
-  embedding: EmbeddingVector;
-  /** Key themes within the narrative. */
-  themes: NarrativeTheme[];
-  /** Generated retrieval queries derived from narrative claims. */
-  retrievalQueries: string[];
-  /** Claims extracted from the narrative. */
-  claimsIdentified: string[];
-  /** Timestamp of creation. */
-  timestamp: number;
-}
-
-// ── Evidence types (kept from Phase 5) ─────────────────────────────────────────
+// ── Evidence types ─────────────────────────────────────────────────────────────
 
 export interface FactCheckReview {
   publisher: string;
@@ -83,7 +65,17 @@ export interface EvidenceBundle {
   newsArticles?: NewsArticle[];
 }
 
-// ── Narrative Analysis (replaces ClaimAnalysis) ────────────────────────────────
+// ── Confidence Breakdown ───────────────────────────────────────────────────────
+
+export interface ConfidenceBreakdown {
+  sourceAuthority: number;       // 0-30
+  evidenceRelevance: number;     // 0-30
+  hedgingLevel: number;          // 0-20
+  multiSourceCorroboration: number; // 0-20
+  total: number;                 // 0-100
+}
+
+// ── Narrative Analysis ─────────────────────────────────────────────────────────
 
 export interface NarrativeAnalysis {
   /** Whether the transcript contains verifiable claims. */
@@ -100,8 +92,14 @@ export interface NarrativeAnalysis {
   context?: string;
   /** The retrieval queries used. */
   retrievalQueries?: string[];
-  /** The claims identified. */
-  claimsIdentified?: string[];
+  /** The central claim from synthesis. */
+  centralClaim?: string;
+  /** Supporting claims from synthesis. */
+  supportingClaims?: string[];
+  /** The narrative summary from synthesis. */
+  narrativeSummary?: string;
+  /** The claim domain from synthesis. */
+  claimDomain?: string;
   /** Whether this is satirical or entertainment content. */
   isSatire: boolean;
 
@@ -110,19 +108,18 @@ export interface NarrativeAnalysis {
   healthResearch?: { status: string; summary: string; sources: ResearchArticle[] } | null;
   newsVerification?: { status: string; summary: string; sources: NewsArticle[] } | null;
 
-  // Confidence breakdown
-  scientificSupport?: 'Strong' | 'Moderate' | 'Weak' | 'None' | 'N/A';
-  manipulationRisk?: 'High' | 'Moderate' | 'Low';
-  evidenceStrength?: 'Strong' | 'Moderate' | 'Weak';
+  // Confidence breakdown (new 4-axis)
+  confidenceBreakdown?: ConfidenceBreakdown;
 
   // Source attribution
   sourceName?: string;
   sourceUrl?: string;
 }
 
-// ── Semantic Cache Entry ───────────────────────────────────────────────────────
+// ── Cache Entry ────────────────────────────────────────────────────────────────
 
 export interface NarrativeCacheEntry {
+  synthesis?: NarrativeSynthesis;
   analysis: NarrativeAnalysis;
   evidence: EvidenceBundle;
   timestamp: number;
@@ -158,15 +155,6 @@ export interface BackgroundResponse {
 // ── Extension Settings ─────────────────────────────────────────────────────────
 
 export interface ExtensionSettings {
-  geminiApiKey?: string;
-  openRouterApiKey?: string;
-}
-
-// ── AI Provider (fallback only) ────────────────────────────────────────────────
-
-export interface AIProvider {
-  analyzeNarrative(
-    narrative: string,
-    evidence?: EvidenceBundle
-  ): Promise<NarrativeAnalysis>;
+  geminiApiKey?: string;         // DEPRECATED — kept for future fallback
+  openRouterApiKey?: string;     // REQUIRED — primary synthesis layer
 }

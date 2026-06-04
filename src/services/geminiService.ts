@@ -1,7 +1,14 @@
-// src/services/geminiService.ts — CredLens NarrativeAI Phase 1
+// src/services/geminiService.ts — CredLens NarrativeAI
 //
-// Gemini fallback service. NOT a primary architecture component.
-// Only used when evidence confidence is extremely low AND API key is configured.
+// ██████████████████████████████████████████████████████████████
+// ██  DEPRECATED — NOT USED IN ACTIVE PIPELINE               ██
+// ██                                                          ██
+// ██  The active pipeline uses narrativeSynthesisService.ts   ██
+// ██  (Claude 3.5 Haiku via OpenRouter).                      ██
+// ██                                                          ██
+// ██  This file is kept as a fallback path for emergencies.   ██
+// ██  Do NOT import in new code.                              ██
+// ██████████████████████████████████████████████████████████████
 
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import type { NarrativeAnalysis, EvidenceBundle } from '../types';
@@ -40,6 +47,7 @@ async function withBackoff<T>(
 
 // ── GeminiService ──────────────────────────────────────────────────────────────
 
+/** @deprecated — Use narrativeSynthesisService.ts instead. Kept for emergency fallback only. */
 export class GeminiService {
   private model: any;
 
@@ -49,8 +57,8 @@ export class GeminiService {
   }
 
   /**
+   * @deprecated — Not called during normal operation.
    * Synthesize a narrative verification using Gemini.
-   * Only called as a LAST RESORT when local verdict is insufficient.
    */
   async synthesizeNarrative(
     narrativeQuery: string,
@@ -80,8 +88,7 @@ RULES:
 • Use phrases like "The video largely exaggerates...", "Current evidence does not support...",
   "This narrative is consistent with scientific understanding..."
 • Be educational, neutral, trust-building. Never accusatory.
-• Verdict must be one of: "Supported by evidence", "Evidence is mixed",
-  "Not supported by evidence", "Exaggerated claim", "Insufficient evidence"
+• Verdict must be one of: "Supported", "Exaggerated", "Misleading", "Insufficient Evidence"
 
 Reply with ONLY valid JSON:
 {
@@ -111,7 +118,7 @@ Reply with ONLY valid JSON:
       console.error('[GeminiService] Synthesis failed:', err?.message);
       return {
         containsClaims: true,
-        verdict: 'Insufficient evidence',
+        verdict: 'Insufficient Evidence',
         credibility: 'none',
         confidence: 40,
         explanation: 'Narrative verification could not be completed. Please try again later.',

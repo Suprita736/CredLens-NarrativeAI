@@ -1,11 +1,16 @@
-// src/services/openRouterService.ts — CredLens NarrativeAI Phase 1
+// src/services/openRouterService.ts — CredLens NarrativeAI
 //
-// OpenRouter fallback provider. Only used when evidence confidence
-// is extremely low AND API key is configured.
+// DEPRECATED — This file is no longer used in the active pipeline.
+//
+// The active pipeline uses narrativeSynthesisService.ts which calls
+// OpenRouter directly with Claude 3.5 Haiku.
+//
+// This file is kept as a fallback path. Do not import in new code.
 
-import type { AIProvider, NarrativeAnalysis, EvidenceBundle } from '../types';
+import type { NarrativeAnalysis, EvidenceBundle } from '../types';
 
-export class OpenRouterProvider implements AIProvider {
+/** @deprecated — Use narrativeSynthesisService.ts instead. */
+export class OpenRouterProvider {
   private readonly endpoint = 'https://openrouter.ai/api/v1/chat/completions';
   private readonly model = 'openai/gpt-4o-mini';
   private readonly timeoutMs = 8000;
@@ -15,6 +20,7 @@ export class OpenRouterProvider implements AIProvider {
     this.apiKey = apiKey;
   }
 
+  /** @deprecated */
   async analyzeNarrative(
     narrative: string,
     evidence?: EvidenceBundle
@@ -63,7 +69,7 @@ export class OpenRouterProvider implements AIProvider {
       return {
         containsClaims: true,
         isSatire: false,
-        verdict: 'Evidence is mixed',
+        verdict: 'Insufficient Evidence',
         credibility: 'medium',
         confidence: 40,
         explanation: 'OpenRouter analysis could not be parsed; using evidence-based assessment.',

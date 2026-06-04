@@ -4,6 +4,7 @@ import {
   Shield,
   ShieldAlert,
   ShieldCheck,
+  ShieldX,
   ChevronDown,
   ChevronUp,
   ExternalLink,
@@ -38,10 +39,10 @@ const CredibilityOverlay: React.FC<Props> = ({ analysis, onClose }) => {
     );
   }
 
-  // Get dynamic styles based on credibility level
-  const getCredibilityConfig = () => {
-    switch (analysis.credibility) {
-      case "high":
+  // Get dynamic styles based on verdict (new 4-verdict system)
+  const getVerdictConfig = () => {
+    switch (analysis.verdict) {
+      case "Supported":
         return {
           glow: "shadow-[0_0_15px_rgba(16,185,129,0.2)]",
           border: "border-emerald-500/30 hover:border-emerald-500/50",
@@ -49,10 +50,10 @@ const CredibilityOverlay: React.FC<Props> = ({ analysis, onClose }) => {
           pillBg: "bg-emerald-500/20 text-emerald-300 border-emerald-500/40",
           text: "text-emerald-300",
           icon: <ShieldCheck className="text-emerald-400 shrink-0" size={18} />,
-          gradient: "from-emerald-500 to-teal-400",
-          badgeText: "High Credibility"
+          badgeText: "Supported",
+          gaugeColor: "#10b981",
         };
-      case "medium":
+      case "Exaggerated":
         return {
           glow: "shadow-[0_0_15px_rgba(245,158,11,0.2)]",
           border: "border-amber-500/30 hover:border-amber-500/50",
@@ -60,20 +61,21 @@ const CredibilityOverlay: React.FC<Props> = ({ analysis, onClose }) => {
           pillBg: "bg-amber-500/20 text-amber-300 border-amber-500/40",
           text: "text-amber-300",
           icon: <ShieldAlert className="text-amber-400 shrink-0" size={18} />,
-          gradient: "from-amber-500 to-orange-400",
-          badgeText: "Unverified / Mixed"
+          badgeText: "Exaggerated",
+          gaugeColor: "#f59e0b",
         };
-      case "low":
+      case "Misleading":
         return {
           glow: "shadow-[0_0_15px_rgba(239,68,68,0.25)]",
           border: "border-rose-500/30 hover:border-rose-500/50",
           bg: "bg-rose-950/85",
           pillBg: "bg-rose-500/20 text-rose-300 border-rose-500/40",
           text: "text-rose-300",
-          icon: <ShieldAlert className="text-rose-400 shrink-0" size={18} />,
-          gradient: "from-rose-500 to-red-400",
-          badgeText: "Inaccurate Claims"
+          icon: <ShieldX className="text-rose-400 shrink-0" size={18} />,
+          badgeText: "Misleading",
+          gaugeColor: "#f43f5e",
         };
+      case "Insufficient Evidence":
       default:
         return {
           glow: "shadow-[0_0_15px_rgba(148,163,184,0.15)]",
@@ -82,22 +84,30 @@ const CredibilityOverlay: React.FC<Props> = ({ analysis, onClose }) => {
           pillBg: "bg-slate-800 text-slate-300 border-slate-700",
           text: "text-slate-300",
           icon: <Shield className="text-slate-400 shrink-0" size={18} />,
-          gradient: "from-slate-500 to-slate-400",
-          badgeText: "Unverified Claim"
+          badgeText: "Insufficient Evidence",
+          gaugeColor: "#94a3b8",
         };
     }
   };
 
-  const config = getCredibilityConfig();
+  const config = getVerdictConfig();
   const hasSources =
     (analysis.factCheck?.url) ||
     (analysis.healthResearch?.sources && analysis.healthResearch.sources.length > 0) ||
     (analysis.newsVerification?.sources && analysis.newsVerification.sources.length > 0);
 
+  // Helper: color for confidence axis bar
+  const axisColor = (value: number, max: number): string => {
+    const ratio = value / max;
+    if (ratio >= 0.7) return "bg-emerald-400";
+    if (ratio >= 0.4) return "bg-amber-400";
+    return "bg-rose-400";
+  };
+
   return (
     <div className="font-sans antialiased select-none pointer-events-auto">
       {!isExpanded ? (
-        // COMPACT Badged Pill View (Minimalist, Non-intrusive)
+        // COMPACT Badged Pill View
         <div
           onClick={() => setIsExpanded(true)}
           className={`
@@ -111,13 +121,13 @@ const CredibilityOverlay: React.FC<Props> = ({ analysis, onClose }) => {
               CredLens AI
             </span>
             <span className="text-xs font-semibold leading-tight mt-0.5">
-              {analysis.verdict || "Unverified Claim"}
+              {analysis.verdict || "Analyzing..."}
             </span>
           </div>
           <ChevronDown size={14} className="text-slate-400 hover:text-white transition-colors ml-1 shrink-0" />
         </div>
       ) : (
-        // EXPANDED Dashboard View (Premium Glassmorphic Panel)
+        // EXPANDED Dashboard View
         <div
           className={`
             w-96 p-5 rounded-2xl backdrop-blur-xl border border-slate-800/80 bg-slate-950/90 text-white shadow-2xl 
@@ -133,13 +143,12 @@ const CredibilityOverlay: React.FC<Props> = ({ analysis, onClose }) => {
               <div>
                 <h3 className="text-sm font-bold tracking-tight">CredLens Fact Check</h3>
                 <p className="text-[10px] text-slate-500 uppercase tracking-widest font-semibold mt-0.5">
-                  AI Misinformation Shield
+                  Narrative Synthesis AI
                 </p>
               </div>
             </div>
             
             <div className="flex items-center gap-1">
-
               <button
                 onClick={onClose}
                 className="p-1 hover:bg-slate-900 rounded-full transition-colors text-slate-400 hover:text-white"
@@ -149,15 +158,20 @@ const CredibilityOverlay: React.FC<Props> = ({ analysis, onClose }) => {
             </div>
           </div>
 
-          {/* Factual Claim Detected */}
-          {analysis.retrievalQueries && analysis.retrievalQueries.length > 0 && (
+          {/* Central Claim */}
+          {analysis.centralClaim && (
             <div className="mb-4 bg-slate-900/50 border border-slate-900 p-3 rounded-xl">
               <span className="text-[9px] uppercase tracking-wider font-bold text-slate-500">
-                Narrative Focus
+                Central Claim
               </span>
               <p className="text-xs text-slate-300 mt-1 italic font-medium leading-relaxed">
-                "{analysis.retrievalQueries.join(' • ')}"
+                "{analysis.centralClaim}"
               </p>
+              {analysis.claimDomain && (
+                <span className="inline-block mt-1.5 text-[8px] px-1.5 py-0.5 rounded bg-slate-800 text-slate-400 border border-slate-700 uppercase tracking-wider font-bold">
+                  {analysis.claimDomain}
+                </span>
+              )}
             </div>
           )}
 
@@ -182,25 +196,23 @@ const CredibilityOverlay: React.FC<Props> = ({ analysis, onClose }) => {
                   strokeWidth="4"
                   fill="transparent"
                   strokeDasharray={144.5}
-                  strokeDashoffset={144.5 - (144.5 * (analysis.confidence || 50)) / 100}
+                  strokeDashoffset={144.5 - (144.5 * (analysis.confidence || 0)) / 100}
                   strokeLinecap="round"
-                  style={{
-                    color: analysis.credibility === "high" ? "#10b981" : analysis.credibility === "medium" ? "#f59e0b" : "#f43f5e"
-                  }}
+                  style={{ color: config.gaugeColor }}
                 />
               </svg>
               <span className="absolute text-[11px] font-bold">
-                {analysis.confidence || 50}%
+                {analysis.confidence || 0}
               </span>
             </div>
 
             <div className="flex-grow">
               <span className="text-[9px] uppercase tracking-wider font-bold text-slate-500 leading-none">
-                AI Rating Verdict
+                Confidence Score
               </span>
               <div className="flex items-center gap-2 mt-1">
                 <span className={`text-xs font-bold ${config.text}`}>
-                  {analysis.verdict || "Unverified"}
+                  {analysis.verdict || "Analyzing"}
                 </span>
                 <span className={`text-[9px] px-1.5 py-0.5 rounded font-bold border uppercase tracking-wider leading-none ${config.pillBg}`}>
                   {config.badgeText}
@@ -209,67 +221,98 @@ const CredibilityOverlay: React.FC<Props> = ({ analysis, onClose }) => {
             </div>
           </div>
 
-          {/* Confidence Breakdown Metrics */}
-          {(!analysis.isSatire && (analysis.scientificSupport || analysis.manipulationRisk || analysis.evidenceStrength)) && (
-            <div className="flex items-center justify-between gap-1.5 mb-4 p-2.5 rounded-xl bg-slate-900/40 border border-slate-900">
-              {analysis.scientificSupport && analysis.scientificSupport !== "N/A" && (
-                <div className="flex-1 flex flex-col items-center border-r border-slate-900/80 last:border-0">
-                  <span className="text-[8px] uppercase tracking-wider text-slate-500 font-bold leading-none">Science</span>
-                  <span className={`text-[10px] font-extrabold mt-1 leading-none ${
-                    analysis.scientificSupport === "Strong" ? "text-emerald-400" :
-                    analysis.scientificSupport === "Moderate" ? "text-amber-400" : "text-rose-400"
-                  }`}>
-                    {analysis.scientificSupport}
-                  </span>
+          {/* 4-Axis Confidence Breakdown */}
+          {analysis.confidenceBreakdown && (
+            <div className="mb-4 p-3 rounded-xl bg-slate-900/40 border border-slate-900 space-y-2">
+              <span className="text-[9px] uppercase tracking-wider font-bold text-slate-500">
+                Confidence Breakdown
+              </span>
+              {/* Source Authority */}
+              <div className="flex items-center gap-2">
+                <span className="text-[8px] text-slate-400 font-semibold w-20 shrink-0 uppercase tracking-wider">Authority</span>
+                <div className="flex-1 h-1.5 bg-slate-800 rounded-full overflow-hidden">
+                  <div
+                    className={`h-full rounded-full transition-all duration-700 ${axisColor(analysis.confidenceBreakdown.sourceAuthority, 30)}`}
+                    style={{ width: `${(analysis.confidenceBreakdown.sourceAuthority / 30) * 100}%` }}
+                  />
                 </div>
-              )}
-              {analysis.evidenceStrength && (
-                <div className="flex-1 flex flex-col items-center border-r border-slate-900/80 last:border-0">
-                  <span className="text-[8px] uppercase tracking-wider text-slate-500 font-bold leading-none">Evidence</span>
-                  <span className={`text-[10px] font-extrabold mt-1 leading-none ${
-                    analysis.evidenceStrength === "Strong" ? "text-emerald-400" :
-                    analysis.evidenceStrength === "Moderate" ? "text-amber-400" : "text-rose-400"
-                  }`}>
-                    {analysis.evidenceStrength}
-                  </span>
+                <span className="text-[9px] font-bold text-slate-300 w-8 text-right">{analysis.confidenceBreakdown.sourceAuthority}/30</span>
+              </div>
+              {/* Evidence Relevance */}
+              <div className="flex items-center gap-2">
+                <span className="text-[8px] text-slate-400 font-semibold w-20 shrink-0 uppercase tracking-wider">Relevance</span>
+                <div className="flex-1 h-1.5 bg-slate-800 rounded-full overflow-hidden">
+                  <div
+                    className={`h-full rounded-full transition-all duration-700 ${axisColor(analysis.confidenceBreakdown.evidenceRelevance, 30)}`}
+                    style={{ width: `${(analysis.confidenceBreakdown.evidenceRelevance / 30) * 100}%` }}
+                  />
                 </div>
-              )}
-              {analysis.manipulationRisk && (
-                <div className="flex-1 flex flex-col items-center border-r border-slate-900/80 last:border-0">
-                  <span className="text-[8px] uppercase tracking-wider text-slate-500 font-bold leading-none">Manip. Risk</span>
-                  <span className={`text-[10px] font-extrabold mt-1 leading-none ${
-                    analysis.manipulationRisk === "Low" ? "text-emerald-400" :
-                    analysis.manipulationRisk === "Moderate" ? "text-amber-400" : "text-rose-400"
-                  }`}>
-                    {analysis.manipulationRisk}
-                  </span>
+                <span className="text-[9px] font-bold text-slate-300 w-8 text-right">{analysis.confidenceBreakdown.evidenceRelevance}/30</span>
+              </div>
+              {/* Hedging Level */}
+              <div className="flex items-center gap-2">
+                <span className="text-[8px] text-slate-400 font-semibold w-20 shrink-0 uppercase tracking-wider">Hedging</span>
+                <div className="flex-1 h-1.5 bg-slate-800 rounded-full overflow-hidden">
+                  <div
+                    className={`h-full rounded-full transition-all duration-700 ${axisColor(analysis.confidenceBreakdown.hedgingLevel, 20)}`}
+                    style={{ width: `${(analysis.confidenceBreakdown.hedgingLevel / 20) * 100}%` }}
+                  />
                 </div>
-              )}
+                <span className="text-[9px] font-bold text-slate-300 w-8 text-right">{analysis.confidenceBreakdown.hedgingLevel}/20</span>
+              </div>
+              {/* Multi-source Corroboration */}
+              <div className="flex items-center gap-2">
+                <span className="text-[8px] text-slate-400 font-semibold w-20 shrink-0 uppercase tracking-wider">Sources</span>
+                <div className="flex-1 h-1.5 bg-slate-800 rounded-full overflow-hidden">
+                  <div
+                    className={`h-full rounded-full transition-all duration-700 ${axisColor(analysis.confidenceBreakdown.multiSourceCorroboration, 20)}`}
+                    style={{ width: `${(analysis.confidenceBreakdown.multiSourceCorroboration / 20) * 100}%` }}
+                  />
+                </div>
+                <span className="text-[9px] font-bold text-slate-300 w-8 text-right">{analysis.confidenceBreakdown.multiSourceCorroboration}/20</span>
+              </div>
             </div>
           )}
 
-          {/* Soft Correction Explanation */}
-          <div className="mb-4 space-y-2">
-            <div>
+          {/* Narrative Summary */}
+          {analysis.narrativeSummary && (
+            <div className="mb-4 bg-slate-900/30 border border-slate-900 p-3 rounded-xl">
               <span className="text-[9px] uppercase tracking-wider font-bold text-slate-500">
-                Evidence Summary
+                Narrative Summary
               </span>
-              <p className="text-xs text-slate-300 mt-1 leading-relaxed whitespace-pre-wrap font-medium">
-                {analysis.explanation || "No supporting external reports could be found to verify this statement."}
+              <p className="text-xs text-slate-300 mt-1 leading-relaxed font-medium">
+                {analysis.narrativeSummary}
               </p>
             </div>
+          )}
 
-            {analysis.context && (
-              <div className="pt-1.5 border-t border-slate-900">
-                <span className="text-[9px] uppercase tracking-wider font-bold text-slate-500">
-                  Context
-                </span>
-                <p className="text-xs text-slate-400 mt-1 leading-relaxed">
-                  {analysis.context}
-                </p>
-              </div>
-            )}
-          </div>
+          {/* Supporting Claims */}
+          {analysis.supportingClaims && analysis.supportingClaims.length > 0 && (
+            <div className="mb-4">
+              <span className="text-[9px] uppercase tracking-wider font-bold text-slate-500">
+                Supporting Claims
+              </span>
+              <ul className="mt-1.5 space-y-1">
+                {analysis.supportingClaims.map((claim, idx) => (
+                  <li key={idx} className="text-[10px] text-slate-400 leading-relaxed pl-2 border-l-2 border-slate-800">
+                    {claim}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {/* Context */}
+          {analysis.context && (
+            <div className="mb-4 pt-1.5 border-t border-slate-900">
+              <span className="text-[9px] uppercase tracking-wider font-bold text-slate-500">
+                Context
+              </span>
+              <p className="text-xs text-slate-400 mt-1 leading-relaxed">
+                {analysis.context}
+              </p>
+            </div>
+          )}
 
           {/* Outbound Citations & Evidence Sources */}
           {hasSources && (

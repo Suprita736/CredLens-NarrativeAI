@@ -1,126 +1,200 @@
-// src/utils/verdictBuilder.ts — CredLens NarrativeAI Phase 1
+// src/utils/verdictBuilder.ts — CredLens Narrative Synthesis Architecture
 //
-// Local verdict builder. Generates narrative verdicts entirely from
-// evidence without requiring any LLM. Uses evidence-driven templates
-// to produce human-readable, educational verdicts.
+// 4-axis confidence scoring and verdict generation.
 //
-// This is the PRIMARY verdict generation mechanism.
-// Gemini/OpenRouter are fallbacks for extreme edge cases only.
+// Confidence Score:
+//   0-30 Source Authority
+//   0-30 Evidence Relevance
+//   0-20 Hedging Level
+//   0-20 Multi-source Corroboration
+//
+// Verdicts:
+//   Supported           (>= 65)
+//   Exaggerated          (40-64)
+//   Misleading           (20-39)
+//   Insufficient Evidence (< 20)
 
 import type {
   NarrativeAnalysis,
   NarrativeVerdict,
   CredibilityLevel,
   EvidenceBundle,
+  ConfidenceBreakdown,
+  NarrativeSynthesis,
   FactCheckResult,
   ResearchArticle,
   NewsArticle,
 } from '../types';
 
-// ── Evidence scoring ───────────────────────────────────────────────────────────
+// ── Trusted source list ────────────────────────────────────────────────────────
 
-interface EvidenceScore {
-  total: number;
-  factCheckScore: number;
-  researchScore: number;
-  newsScore: number;
-  sourceCount: number;
-  hasConflicts: boolean;
+const TRUSTED_NEWS = new Set([
+  'reuters', 'associated press', 'ap news', 'bbc', 'bbc news',
+  'bloomberg', 'cnbc', 'the guardian', 'the new york times',
+  'the washington post', 'npr', 'pbs', 'cnn', 'cbs news', 'abc news',
+  'nbc news', 'who', 'cdc', 'nih',
+]);
+
+function isTrustedSource(source: string): boolean {
+  return TRUSTED_NEWS.has(source.toLowerCase().trim());
 }
 
-function scoreEvidence(evidence: EvidenceBundle): EvidenceScore {
-  const factCheck = evidence.factCheck ?? null;
-  const research = evidence.healthResearch ?? [];
-  const news = evidence.newsArticles ?? [];
+// ── Source Authority (0-30) ────────────────────────────────────────────────────
 
-  let factCheckScore = 0;
-  if (factCheck) {
-    factCheckScore = factCheck.confidence ?? 50;
-    const v = factCheck.verdict.toLowerCase();
-    if (v.includes('false') || v.includes('misleading') || v.includes('debunk')) {
-      factCheckScore = Math.max(factCheckScore, 70); // strong negative signal
-    }
+function scoreSourceAuthority(evidence: EvidenceBundle): number {
+  let score = 0;
+
+  // FactCheck source = 30 (highest authority)
+  if (evidence.factCheck) {
+    score = Math.max(score, 30);
   }
 
-  const researchScore = Math.min(45, research.length * 15);
-  const newsScore = Math.min(30, news.length * 10);
-
-  const sourceCount =
-    (factCheck ? 1 : 0) + research.length + news.length;
-
-  // Detect conflicts: factcheck says false but research says supported
-  let hasConflicts = false;
-  if (factCheck && research.length > 0) {
-    const fcVerdict = factCheck.verdict.toLowerCase();
-    if (fcVerdict.includes('false') || fcVerdict.includes('misleading')) {
-      hasConflicts = true; // factcheck contradicts research presence
-    }
+  // PubMed = 25
+  if (evidence.healthResearch && evidence.healthResearch.length > 0) {
+    score = Math.max(score, 25);
   }
 
-  const total = Math.min(100, factCheckScore + researchScore + newsScore);
+  // Trusted news = 15, unknown news = 5
+  if (evidence.newsArticles && evidence.newsArticles.length > 0) {
+    const hasTrusted = evidence.newsArticles.some(a => isTrustedSource(a.source));
+    score = Math.max(score, hasTrusted ? 15 : 5);
+  }
 
-  return { total, factCheckScore, researchScore, newsScore, sourceCount, hasConflicts };
+  return score;
+}
+
+// ── Evidence Relevance (0-30) ──────────────────────────────────────────────────
+
+function scoreEvidenceRelevance(
+  evidence: EvidenceBundle,
+  retrievalQueryCount: number
+): number {
+  if (retrievalQueryCount === 0) return 0;
+
+  // Count how many source types returned results
+  let sourcesWithResults = 0;
+  if (evidence.factCheck) sourcesWithResults++;
+  if (evidence.healthResearch && evidence.healthResearch.length > 0) sourcesWithResults++;
+  if (evidence.newsArticles && evidence.newsArticles.length > 0) sourcesWithResults++;
+
+  // Scale by coverage: 1 source = 10, 2 sources = 20, 3 sources = 30
+  return Math.min(30, sourcesWithResults * 10);
+}
+
+// ── Hedging Level (0-20) ───────────────────────────────────────────────────────
+
+function scoreHedging(hedgingLevel: string): number {
+  // Well-hedged claims are more credible (creator isn't making absolute claims)
+  switch (hedgingLevel) {
+    case 'high': return 20;
+    case 'moderate': return 15;
+    case 'low': return 8;
+    case 'none': return 0;   // Bold absolute claims = lower score
+    default: return 10;
+  }
+}
+
+// ── Multi-source Corroboration (0-20) ──────────────────────────────────────────
+
+function scoreCorroboration(evidence: EvidenceBundle): number {
+  let sourceTypes = 0;
+  if (evidence.factCheck) sourceTypes++;
+  if (evidence.healthResearch && evidence.healthResearch.length > 0) sourceTypes++;
+  if (evidence.newsArticles && evidence.newsArticles.length > 0) sourceTypes++;
+
+  // Also count total individual sources
+  const totalSources =
+    (evidence.factCheck ? 1 : 0) +
+    (evidence.healthResearch?.length ?? 0) +
+    (evidence.newsArticles?.length ?? 0);
+
+  // Base: source types × 5 = max 15, then bonus for volume
+  let score = sourceTypes * 5;
+  if (totalSources >= 5) score += 5;
+  else if (totalSources >= 3) score += 3;
+
+  return Math.min(20, score);
+}
+
+// ── Compute full confidence breakdown ──────────────────────────────────────────
+
+function computeConfidence(
+  evidence: EvidenceBundle,
+  synthesis: NarrativeSynthesis,
+  retrievalQueryCount: number
+): ConfidenceBreakdown {
+  const sourceAuthority = scoreSourceAuthority(evidence);
+  const evidenceRelevance = scoreEvidenceRelevance(evidence, retrievalQueryCount);
+  const hedgingLevel = scoreHedging(synthesis.hedging_level);
+  const multiSourceCorroboration = scoreCorroboration(evidence);
+
+  const total = sourceAuthority + evidenceRelevance + hedgingLevel + multiSourceCorroboration;
+
+  return {
+    sourceAuthority,
+    evidenceRelevance,
+    hedgingLevel,
+    multiSourceCorroboration,
+    total: Math.min(100, total),
+  };
 }
 
 // ── Verdict determination ──────────────────────────────────────────────────────
 
 function determineVerdict(
-  score: EvidenceScore,
+  confidenceTotal: number,
   factCheck: FactCheckResult | null
 ): { verdict: NarrativeVerdict; credibility: CredibilityLevel } {
-  // If retrieval evidence weak -> Insufficient evidence
-  if (score.sourceCount === 0 || score.total < 15) {
-    return { verdict: 'Insufficient evidence', credibility: 'none' };
-  }
-
-  // Conflicts or some support / some contradict -> Mixed evidence
-  if (score.hasConflicts || (score.total >= 15 && score.total < 40)) {
-    return { verdict: 'Evidence is mixed', credibility: 'medium' };
-  }
-
-  // Strong factcheck negative
+  // If factcheck explicitly says false/misleading, override confidence
   if (factCheck) {
     const v = factCheck.verdict.toLowerCase();
     if (v.includes('false') || v.includes('incorrect') || v.includes('fake') || v.includes('debunk')) {
-      return { verdict: 'Not supported by evidence', credibility: 'low' };
+      return { verdict: 'Misleading', credibility: 'low' };
     }
     if (v.includes('misleading') || v.includes('exaggerat') || v.includes('partly')) {
-      return { verdict: 'Exaggerated claim', credibility: 'low' };
+      return { verdict: 'Exaggerated', credibility: 'low' };
     }
-    if (v.includes('true') || v.includes('correct') || v.includes('accurate')) {
-      return { verdict: 'Supported by evidence', credibility: 'high' };
-    }
-    return { verdict: 'Evidence is mixed', credibility: 'medium' };
   }
 
-  // Only return Supported by evidence when strong evidence exists
-  if (score.researchScore >= 30 || score.newsScore >= 30 || score.total >= 40) {
-    return { verdict: 'Supported by evidence', credibility: 'high' };
+  // Confidence-based verdict
+  if (confidenceTotal >= 65) {
+    return { verdict: 'Supported', credibility: 'high' };
   }
-
-  return { verdict: 'Evidence is mixed', credibility: 'medium' };
+  if (confidenceTotal >= 40) {
+    return { verdict: 'Exaggerated', credibility: 'medium' };
+  }
+  if (confidenceTotal >= 20) {
+    return { verdict: 'Misleading', credibility: 'low' };
+  }
+  return { verdict: 'Insufficient Evidence', credibility: 'none' };
 }
 
-// ── Explanation templates ──────────────────────────────────────────────────────
+// ── Explanation builder ────────────────────────────────────────────────────────
 
 function buildExplanation(
   verdict: NarrativeVerdict,
+  synthesis: NarrativeSynthesis,
   factCheck: FactCheckResult | null,
   research: ResearchArticle[],
   news: NewsArticle[],
-  summary: string,
-  claims: string[]
+  breakdown: ConfidenceBreakdown
 ): string {
   const parts: string[] = [];
-  
-  parts.push(`Narrative Summary:\n"${summary}"\n`);
-  
-  if (claims && claims.length > 0) {
-    parts.push(`Claims Identified:\n${claims.map(c => `- ${c}`).join('\n')}\n`);
+
+  // Narrative summary
+  parts.push(`Narrative Summary:\n"${synthesis.narrative_summary}"\n`);
+
+  // Central claim
+  parts.push(`Central Claim:\n"${synthesis.central_claim}"\n`);
+
+  // Supporting claims
+  if (synthesis.supporting_claims.length > 0) {
+    parts.push(`Supporting Claims:\n${synthesis.supporting_claims.map(c => `- ${c}`).join('\n')}\n`);
   }
 
+  // Evidence sources
   const evidenceSources: string[] = [];
-  if (factCheck) evidenceSources.push(`FactCheck: ${factCheck.source}`);
+  if (factCheck) evidenceSources.push(`FactCheck: ${factCheck.source} — "${factCheck.verdict}"`);
   research.forEach(r => evidenceSources.push(`PubMed: ${r.journal}`));
   news.forEach(n => evidenceSources.push(`News: ${n.source}`));
 
@@ -130,26 +204,26 @@ function buildExplanation(
     parts.push(`Evidence:\n- None found\n`);
   }
 
-  let finalVerdictStr: string = verdict;
-  if (verdict === 'Evidence is mixed') finalVerdictStr = 'Mixed evidence found.';
-  else if (verdict === 'Supported by evidence') finalVerdictStr = 'Supported by strong evidence.';
-  else if (verdict === 'Insufficient evidence') finalVerdictStr = 'Insufficient evidence to verify.';
+  // Confidence
+  parts.push(`Confidence: ${breakdown.total}/100 (Authority: ${breakdown.sourceAuthority}/30, Relevance: ${breakdown.evidenceRelevance}/30, Hedging: ${breakdown.hedgingLevel}/20, Corroboration: ${breakdown.multiSourceCorroboration}/20)\n`);
 
-  parts.push(`Verdict:\n${finalVerdictStr}`);
+  // Verdict
+  parts.push(`Verdict: ${verdict}`);
 
   return parts.join('\n');
 }
 
 function buildContext(
   verdict: NarrativeVerdict,
+  _synthesis: NarrativeSynthesis,
   research: ResearchArticle[],
   news: NewsArticle[]
 ): string {
-  if (verdict === 'Not supported by evidence' || verdict === 'Exaggerated claim') {
+  if (verdict === 'Misleading') {
     return 'Consider consulting peer-reviewed sources, established health organizations, or trusted news outlets for accurate information on this topic.';
   }
-  if (verdict === 'Evidence is mixed') {
-    return 'Scientific understanding evolves over time. Look for recent systematic reviews or meta-analyses for the most reliable conclusions.';
+  if (verdict === 'Exaggerated') {
+    return 'Some claims in this video appear overstated. Look for recent systematic reviews or meta-analyses for the most reliable conclusions.';
   }
   if (research.length > 0) {
     return `Evidence sourced from ${research.length} peer-reviewed publication${research.length !== 1 ? 's' : ''} via PubMed.`;
@@ -157,79 +231,37 @@ function buildContext(
   if (news.length > 0) {
     return `Verified against ${news.length} credible news report${news.length !== 1 ? 's' : ''}.`;
   }
-  return 'Retrieved via local intelligence verification tools.';
-}
-
-// ── Confidence scoring ─────────────────────────────────────────────────────────
-
-interface ConfidenceBreakdown {
-  confidence: number;
-  scientificSupport: 'Strong' | 'Moderate' | 'Weak' | 'None' | 'N/A';
-  manipulationRisk: 'High' | 'Moderate' | 'Low';
-  evidenceStrength: 'Strong' | 'Moderate' | 'Weak';
-}
-
-function computeConfidence(
-  score: EvidenceScore,
-  verdict: NarrativeVerdict
-): ConfidenceBreakdown {
-  let confidence = Math.min(95, Math.max(30, score.total));
-
-  let scientificSupport: ConfidenceBreakdown['scientificSupport'] = 'N/A';
-  if (score.researchScore > 0) {
-    if (score.researchScore >= 30) scientificSupport = 'Strong';
-    else if (score.researchScore >= 15) scientificSupport = 'Moderate';
-    else scientificSupport = 'Weak';
-  }
-
-  let evidenceStrength: ConfidenceBreakdown['evidenceStrength'] = 'Weak';
-  if (score.sourceCount >= 3 || score.total >= 60) evidenceStrength = 'Strong';
-  else if (score.sourceCount >= 1) evidenceStrength = 'Moderate';
-
-  let manipulationRisk: ConfidenceBreakdown['manipulationRisk'] = 'Moderate';
-  if (verdict === 'Supported by evidence') manipulationRisk = 'Low';
-  else if (verdict === 'Not supported by evidence' || verdict === 'Exaggerated claim') {
-    manipulationRisk = 'High';
-  }
-
-  if (verdict === 'Not supported by evidence') confidence = Math.max(confidence, 65);
-  if (verdict === 'Insufficient evidence') confidence = Math.min(confidence, 40);
-
-  return { confidence, scientificSupport, manipulationRisk, evidenceStrength };
+  return 'Insufficient external evidence to verify. Use critical thinking when evaluating these claims.';
 }
 
 // ── Main export ────────────────────────────────────────────────────────────────
 
 export function buildVerdict(
   evidence: EvidenceBundle,
-  narrative: { transcript: string, retrievalQueries?: string[], claimsIdentified?: string[] }
+  synthesis: NarrativeSynthesis,
+  retrievalQueryCount: number
 ): NarrativeAnalysis {
   const factCheck = evidence.factCheck ?? null;
   const research = evidence.healthResearch ?? [];
   const news = evidence.newsArticles ?? [];
 
-  const score = scoreEvidence(evidence);
-  const { verdict, credibility } = determineVerdict(score, factCheck);
-  
-  // Extract summary from transcript for the explanation output (up to 200 chars)
-  const summary = narrative.claimsIdentified && narrative.claimsIdentified.length > 0 
-    ? narrative.claimsIdentified.join(' ')
-    : narrative.transcript.slice(0, 200);
+  const breakdown = computeConfidence(evidence, synthesis, retrievalQueryCount);
+  const { verdict, credibility } = determineVerdict(breakdown.total, factCheck);
+  const explanation = buildExplanation(verdict, synthesis, factCheck, research, news, breakdown);
+  const context = buildContext(verdict, synthesis, research, news);
 
-  const explanation = buildExplanation(verdict, factCheck, research, news, summary, narrative.claimsIdentified || []);
-  const context = buildContext(verdict, research, news);
-  const { confidence, scientificSupport, manipulationRisk, evidenceStrength } =
-    computeConfidence(score, verdict);
-
-  const analysis: NarrativeAnalysis = {
+  return {
     containsClaims: true,
     verdict,
     credibility,
-    confidence,
+    confidence: breakdown.total,
     explanation,
     context,
-    retrievalQueries: narrative.retrievalQueries || [],
-    claimsIdentified: narrative.claimsIdentified || [],
+    retrievalQueries: [],  // Will be set by the pipeline
+    centralClaim: synthesis.central_claim,
+    supportingClaims: synthesis.supporting_claims,
+    narrativeSummary: synthesis.narrative_summary,
+    claimDomain: synthesis.claim_domain,
     isSatire: false,
 
     factCheck,
@@ -240,15 +272,11 @@ export function buildVerdict(
       ? { status: 'Widely reported', summary: explanation, sources: news }
       : null,
 
-    scientificSupport,
-    manipulationRisk,
-    evidenceStrength,
+    confidenceBreakdown: breakdown,
 
     sourceName: factCheck?.source ?? research[0]?.journal ?? news[0]?.source,
     sourceUrl: factCheck?.url ?? research[0]?.url ?? news[0]?.url,
   };
-
-  return analysis;
 }
 
 /**
@@ -257,7 +285,7 @@ export function buildVerdict(
 export function buildNoClaimsVerdict(reason: string): NarrativeAnalysis {
   return {
     containsClaims: false,
-    verdict: 'No verifiable claims detected',
+    verdict: 'Insufficient Evidence',
     credibility: 'none',
     confidence: 0,
     explanation: reason,
@@ -271,7 +299,7 @@ export function buildNoClaimsVerdict(reason: string): NarrativeAnalysis {
 export function buildSatireVerdict(): NarrativeAnalysis {
   return {
     containsClaims: false,
-    verdict: 'Satirical / Entertainment',
+    verdict: 'Supported',
     credibility: 'high',
     confidence: 90,
     explanation: 'This content appears to be satirical or entertainment-focused.',

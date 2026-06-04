@@ -1,25 +1,28 @@
-// src/background/index.ts — CredLens NarrativeAI Phase 1
+// src/background/index.ts — CredLens Narrative Synthesis Architecture
 //
-// Narrative Verification Pipeline.
+// Pipeline:
+//   Watch Completion Gate (content script)
+//   ↓
+//   Full Stabilized Transcript
+//   ↓
+//   Haiku Narrative Synthesis (Claude 3.5 Haiku via OpenRouter)
+//   ↓
+//   Domain Routing
+//   ↓
+//   Evidence Retrieval (PubMed, FactCheck, News)
+//   ↓
+//   Confidence Scoring (4-axis)
+//   ↓
+//   Verdict (Supported / Exaggerated / Misleading / Insufficient Evidence)
+//   ↓
+//   Video Cache
 //
-// Decision flow:
-//   Transcript
-//   → Transcript stabilization (content script)
-//   → Narrative representation (semantic embedding)
-//   → Semantic cache check (cosine similarity)
-//   → If cache hit → reuse verdict + evidence → done
-//   → Narrative-driven retrieval (PubMed, FactCheck, News)
-//   → Local verdict builder (evidence-driven templates)
-//   → If confidence < 40 AND LLM key configured → Gemini/OpenRouter fallback
-//   → Cache result + respond
-//
-// Normal operation works WITHOUT any API keys.
-// Gemini and OpenRouter are NOT primary components.
+// NOTE: Gemini is kept as a deprecated fallback but NOT called during normal operation.
 
 import { QueueManager } from './queueManager';
 import { CacheService } from '../services/cacheService';
 import { RetrievalEngine } from '../services/retrievalEngine';
-import { buildNarrative, hasVerifiableContent } from '../utils/narrativeEngine';
+import { synthesizeNarrative, buildRetrievalQueries } from '../services/narrativeSynthesisService';
 import { buildVerdict, buildNoClaimsVerdict } from '../utils/verdictBuilder';
 import type { NarrativeAnalysis, BackgroundMessage, BackgroundResponse } from '../types';
 
@@ -63,7 +66,7 @@ chrome.runtime.onConnect.addListener((port) => {
   });
 });
 
-// ── Narrative Verification Pipeline ────────────────────────────────────────────
+// ── Narrative Synthesis Pipeline ───────────────────────────────────────────────
 
 async function runNarrativePipeline(
   videoId: string,
@@ -76,21 +79,20 @@ async function runNarrativePipeline(
   const signal = QueueManager.register(videoId);
 
   try {
-    // ── Step 1: Load API keys (all optional) ────────────────────────────────
+    // ── Step 1: Load API keys ─────────────────────────────────────────────────
     const storage = await chrome.storage.local.get([
       'geminiApiKey',
       'openRouterApiKey',
     ]) as { geminiApiKey?: string; openRouterApiKey?: string };
 
-    const geminiApiKey = storage.geminiApiKey || '';
     const openRouterApiKey = storage.openRouterApiKey || '';
-    const googleApiKey = geminiApiKey; // Same key for Fact Check API
+    const googleApiKey = storage.geminiApiKey || ''; // Used for Fact Check API
 
     console.log(
-      `[Background] Keys: gemini=${geminiApiKey ? '✓' : '✗'}, openRouter=${openRouterApiKey ? '✓' : '✗'}`
+      `[Background] Keys: openRouter=${openRouterApiKey ? '✓' : '✗'}, google=${googleApiKey ? '✓' : '✗'}`
     );
 
-    // ── Step 2: Video ID cache check ────────────────────────────────────────
+    // ── Step 2: Video ID cache check ──────────────────────────────────────────
     const cachedByVideo = await CacheService.getByVideoId(videoId);
     if (cachedByVideo) {
       console.log(`[Background] Cache Hit (videoId): ${videoId}`);
@@ -101,112 +103,76 @@ async function runNarrativePipeline(
 
     if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
 
-    // ── Step 3: Verifiable content check ────────────────────────────────────
-    if (!hasVerifiableContent(transcript)) {
-      console.log('[Background] No verifiable content detected in transcript.');
-      const noClaimsResult = buildNoClaimsVerdict(
-        'No verifiable claims detected in this video.'
+    // ── Step 3: Watch Gate Check ──────────────────────────────────────────────
+    const watchPercentage = Math.round(currentProgress * 100);
+    if (watchPercentage < 85) {
+      console.log(`[WatchGate] Verification blocked (<85%)`);
+      return;
+    }
+    console.log(`[WatchGate] Verification triggered at ${watchPercentage}%`);
+
+    // ── Step 4: OpenRouter API key required check ─────────────────────────────
+    if (!openRouterApiKey) {
+      console.warn('[Background] OpenRouter API key required for Narrative Synthesis.');
+      const noKeyResult = buildNoClaimsVerdict(
+        'OpenRouter API key is required for narrative analysis. Please configure it in the extension settings.'
       );
-      await CacheService.set(videoId, transcriptLength, currentProgress, noClaimsResult, {});
-      postResponse(port, { status: 'completed', videoId, analysis: noClaimsResult });
+      postResponse(port, { status: 'completed', videoId, analysis: noKeyResult });
+      QueueManager.complete(videoId);
+      return;
+    }
+
+    // ── Step 5: Transcript minimum check ──────────────────────────────────────
+    const wordCount = transcript.split(/\s+/).filter(Boolean).length;
+    if (wordCount < 15) {
+      console.log('[Background] Transcript too short for synthesis.');
+      const shortResult = buildNoClaimsVerdict('Transcript too short to analyze.');
+      await CacheService.set(videoId, transcriptLength, currentProgress, shortResult, {});
+      postResponse(port, { status: 'completed', videoId, analysis: shortResult });
       QueueManager.complete(videoId);
       return;
     }
 
     if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
 
-    // ── Step 3.5: Watch Gate Check ───────────────────────────────────────────
-    const watchPercentage = Math.round(currentProgress * 100);
-    const watchGateSatisfied = watchPercentage >= 85 || watchPercentage >= 99; // 99+ is treated as ended/completed
-    
-    if (!watchGateSatisfied) {
-      console.log(`[WatchGate] Verification blocked (<85%)`);
-      return;
-    }
-    
-    if (watchPercentage >= 99) {
-      console.log(`[WatchGate] Final verification triggered at completion`);
-    } else {
-      console.log(`[WatchGate] Verification triggered at 85%`);
-    }
-
-    // ── Step 4: Build narrative representation ──────────────────────────────
-    console.log('[Background] Building narrative representation...');
-    const narrative = await buildNarrative(transcript);
-    console.log(
-      `[Background] Narrative built: ${narrative.themes.length} themes, ` +
-      `queries=${narrative.retrievalQueries.length}`
-    );
+    // ── Step 6: Haiku Narrative Synthesis ──────────────────────────────────────
+    console.log('[Background] ===> Haiku Narrative Synthesis START');
+    const synthesis = await synthesizeNarrative(transcript, openRouterApiKey, signal);
+    console.log('[Background] ===> Haiku Narrative Synthesis COMPLETE');
+    console.log(`[Background] Central claim: "${synthesis.central_claim}"`);
+    console.log(`[Background] Domain: ${synthesis.claim_domain}`);
 
     if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
 
-
+    // ── Step 7: Build retrieval queries from synthesis ─────────────────────────
+    const retrievalQueries = buildRetrievalQueries(synthesis);
 
     if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
 
-    // ── Step 6: Narrative-driven retrieval ───────────────────────────────────
-    console.log('[Background] ==> Narrative retrieval START');
+    // ── Step 8: Domain-routed evidence retrieval ──────────────────────────────
+    console.log('[Background] ===> Evidence Retrieval START');
     const evidence = await RetrievalEngine.retrieve(
-      narrative.retrievalQueries,
+      retrievalQueries,
+      synthesis.claim_domain,
       googleApiKey,
       signal
     );
+    console.log('[Background] ===> Evidence Retrieval COMPLETE');
 
     if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
 
-    // ── Step 7: Local verdict builder ───────────────────────────────────────
-    console.log('[Background] Building local verdict from evidence...');
-    let analysis: NarrativeAnalysis = buildVerdict(evidence, narrative);
+    // ── Step 9: 4-axis confidence scoring + verdict ───────────────────────────
+    console.log('[Background] ===> Confidence Scoring + Verdict');
+    const analysis: NarrativeAnalysis = buildVerdict(evidence, synthesis, retrievalQueries.length);
+    analysis.retrievalQueries = retrievalQueries;
     console.log(
-      `[Background] Local verdict: "${analysis.verdict}", confidence=${analysis.confidence}`
+      `[Background] Verdict: "${analysis.verdict}", Confidence: ${analysis.confidence}/100`
     );
 
-    // ── Step 8: LLM fallback (only if confidence < 40 AND key available) ──
-    if (analysis.confidence < 40) {
-      // Try Gemini (optional)
-      if (geminiApiKey && !signal.aborted) {
-        try {
-          console.log('[Background] Low confidence — attempting Gemini fallback...');
-          const { GeminiService } = await import('../services/geminiService');
-          const gemini = new GeminiService(geminiApiKey);
-          const geminiResult = await gemini.synthesizeNarrative(
-            narrative.retrievalQueries.join(', '),
-            evidence,
-            signal
-          );
-          analysis = geminiResult;
-          console.log('[Background] Gemini synthesis succeeded.');
-        } catch (err: any) {
-          if (err?.name === 'AbortError') throw err;
-          console.warn('[Background] Gemini fallback failed (non-fatal):', err?.message);
-        }
-      }
-
-      // Try OpenRouter (optional, last resort)
-      if (analysis.confidence < 40 && openRouterApiKey && !signal.aborted) {
-        try {
-          console.log('[Background] Low confidence — attempting OpenRouter fallback...');
-          const { OpenRouterProvider } = await import('../services/openRouterService');
-          const openRouter = new OpenRouterProvider(openRouterApiKey);
-          const orResult = await openRouter.analyzeNarrative(
-            narrative.retrievalQueries.join(', '),
-            evidence
-          );
-          if (orResult.confidence && orResult.confidence > analysis.confidence) {
-            analysis = orResult;
-            console.log('[Background] OpenRouter result used.');
-          }
-        } catch (err: any) {
-          if (err?.name === 'AbortError') throw err;
-          console.warn('[Background] OpenRouter fallback failed (non-fatal):', err?.message);
-        }
-      }
-    }
-
     if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
 
-    // ── Step 9: Cache and respond ───────────────────────────────────────────
-    await CacheService.set(videoId, transcriptLength, currentProgress, analysis, evidence);
+    // ── Step 10: Cache and respond ────────────────────────────────────────────
+    await CacheService.set(videoId, transcriptLength, currentProgress, analysis, evidence, synthesis);
     postResponse(port, { status: 'completed', videoId, analysis });
 
   } catch (error: any) {
