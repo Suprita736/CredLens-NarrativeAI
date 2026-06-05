@@ -12,6 +12,7 @@ export interface NarrativeSynthesis {
   supporting_claims: string[];
   claim_domain: string;
   hedging_level: 'none' | 'low' | 'moderate' | 'high';
+  pubmed_queries?: string[];
 }
 
 // ── Verdict types ──────────────────────────────────────────────────────────────
@@ -50,6 +51,7 @@ export interface ResearchArticle {
   date: string;
   url: string;
   id: string;
+  abstract?: string;
 }
 
 export interface NewsArticle {

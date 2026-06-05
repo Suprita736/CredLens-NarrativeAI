@@ -24,6 +24,7 @@ import { CacheService } from '../services/cacheService';
 import { RetrievalEngine } from '../services/retrievalEngine';
 import { synthesizeNarrative, buildRetrievalQueries } from '../services/narrativeSynthesisService';
 import { buildVerdict, buildNoClaimsVerdict } from '../utils/verdictBuilder';
+import { evaluateEvidence } from '../services/evidenceEvaluationService';
 import type { NarrativeAnalysis, BackgroundMessage, BackgroundResponse } from '../types';
 
 // ── Lifecycle hooks ────────────────────────────────────────────────────────────
@@ -161,9 +162,25 @@ async function runNarrativePipeline(
 
     if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
 
-    // ── Step 9: 4-axis confidence scoring + verdict ───────────────────────────
+    // ── Step 9: Pass 2 — Evidence Evaluation (Haiku interprets evidence) ────
+    console.log('[Background] ===> Pass 2 Evidence Evaluation START');
+    const evaluation = await evaluateEvidence(
+      synthesis,
+      evidence.healthResearch ?? [],
+      evidence.newsArticles ?? [],
+      openRouterApiKey,
+      signal
+    );
+    console.log('[Background] ===> Pass 2 Evidence Evaluation COMPLETE');
+    if (evaluation) {
+      console.log(`[Background] Evidence verdict: ${evaluation.overall_verdict}, confidence: ${evaluation.overall_confidence}`);
+    }
+
+    if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
+
+    // ── Step 10: 4-axis confidence scoring + verdict ──────────────────────────
     console.log('[Background] ===> Confidence Scoring + Verdict');
-    const analysis: NarrativeAnalysis = buildVerdict(evidence, synthesis, retrievalQueries.length);
+    const analysis: NarrativeAnalysis = buildVerdict(evidence, synthesis, retrievalQueries.length, evaluation);
     analysis.retrievalQueries = retrievalQueries;
     console.log(
       `[Background] Verdict: "${analysis.verdict}", Confidence: ${analysis.confidence}/100`
@@ -171,7 +188,7 @@ async function runNarrativePipeline(
 
     if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
 
-    // ── Step 10: Cache and respond ────────────────────────────────────────────
+    // ── Step 11: Cache and respond ────────────────────────────────────────────
     await CacheService.set(videoId, transcriptLength, currentProgress, analysis, evidence, synthesis);
     postResponse(port, { status: 'completed', videoId, analysis });
 

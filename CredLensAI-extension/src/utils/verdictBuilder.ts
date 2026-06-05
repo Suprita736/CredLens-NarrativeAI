@@ -25,6 +25,7 @@ import type {
   ResearchArticle,
   NewsArticle,
 } from '../types';
+import type { EvidenceEvaluation, SupportVerdict } from '../services/evidenceEvaluationService';
 
 // ── Trusted source list ────────────────────────────────────────────────────────
 
@@ -121,12 +122,40 @@ function scoreCorroboration(evidence: EvidenceBundle): number {
 function computeConfidence(
   evidence: EvidenceBundle,
   synthesis: NarrativeSynthesis,
-  retrievalQueryCount: number
+  retrievalQueryCount: number,
+  evaluation: EvidenceEvaluation | null
 ): ConfidenceBreakdown {
   const sourceAuthority = scoreSourceAuthority(evidence);
-  const evidenceRelevance = scoreEvidenceRelevance(evidence, retrievalQueryCount);
   const hedgingLevel = scoreHedging(synthesis.hedging_level);
   const multiSourceCorroboration = scoreCorroboration(evidence);
+
+  // NEW: direction-weighted evidence relevance
+  let evidenceRelevance: number;
+
+  if (evaluation) {
+    const directionWeight: Record<SupportVerdict, number> = {
+      supports: 1.0,
+      mixed: 0.5,
+      unrelated: 0.1,
+      contradicts: -0.4,
+    };
+
+    const direction = directionWeight[evaluation.overall_verdict as SupportVerdict] 
+      ?? directionWeight[
+          evaluation.overall_verdict === 'exaggerated' ? 'mixed' :
+          evaluation.overall_verdict === 'misleading' ? 'contradicts' :
+          evaluation.overall_verdict === 'insufficient_evidence' ? 'unrelated' : 'mixed'
+        ];
+
+    // Base evidence score from Haiku's own confidence, scaled by direction
+    const rawEvidenceScore = evaluation.overall_confidence * direction;
+
+    // Map to 0-30 range (raw can be negative for contradicts)
+    evidenceRelevance = Math.max(0, Math.min(30, Math.round((rawEvidenceScore / 100) * 30)));
+  } else {
+    // Fallback: old quantity-based scoring
+    evidenceRelevance = scoreEvidenceRelevance(evidence, retrievalQueryCount);
+  }
 
   const total = sourceAuthority + evidenceRelevance + hedgingLevel + multiSourceCorroboration;
 
@@ -135,7 +164,7 @@ function computeConfidence(
     evidenceRelevance,
     hedgingLevel,
     multiSourceCorroboration,
-    total: Math.min(100, total),
+    total: Math.min(100, Math.max(0, total)),
   };
 }
 
@@ -143,9 +172,24 @@ function computeConfidence(
 
 function determineVerdict(
   confidenceTotal: number,
-  factCheck: FactCheckResult | null
+  factCheck: FactCheckResult | null,
+  evaluation: EvidenceEvaluation | null
 ): { verdict: NarrativeVerdict; credibility: CredibilityLevel } {
-  // If factcheck explicitly says false/misleading, override confidence
+  // Pass 2 evaluation overrides confidence-based verdict when available
+  if (evaluation) {
+    switch (evaluation.overall_verdict) {
+      case 'supports':
+        return { verdict: 'Supported', credibility: 'high' };
+      case 'exaggerated':
+        return { verdict: 'Exaggerated', credibility: 'medium' };
+      case 'misleading':
+        return { verdict: 'Misleading', credibility: 'low' };
+      case 'insufficient_evidence':
+        return { verdict: 'Insufficient Evidence', credibility: 'none' };
+    }
+  }
+
+  // Factcheck explicit override
   if (factCheck) {
     const v = factCheck.verdict.toLowerCase();
     if (v.includes('false') || v.includes('incorrect') || v.includes('fake') || v.includes('debunk')) {
@@ -156,16 +200,10 @@ function determineVerdict(
     }
   }
 
-  // Confidence-based verdict
-  if (confidenceTotal >= 65) {
-    return { verdict: 'Supported', credibility: 'high' };
-  }
-  if (confidenceTotal >= 40) {
-    return { verdict: 'Exaggerated', credibility: 'medium' };
-  }
-  if (confidenceTotal >= 20) {
-    return { verdict: 'Misleading', credibility: 'low' };
-  }
+  // Confidence-based fallback
+  if (confidenceTotal >= 65) return { verdict: 'Supported', credibility: 'high' };
+  if (confidenceTotal >= 40) return { verdict: 'Exaggerated', credibility: 'medium' };
+  if (confidenceTotal >= 20) return { verdict: 'Misleading', credibility: 'low' };
   return { verdict: 'Insufficient Evidence', credibility: 'none' };
 }
 
@@ -239,23 +277,28 @@ function buildContext(
 export function buildVerdict(
   evidence: EvidenceBundle,
   synthesis: NarrativeSynthesis,
-  retrievalQueryCount: number
+  retrievalQueryCount: number,
+  evaluation: EvidenceEvaluation | null = null
 ): NarrativeAnalysis {
   const factCheck = evidence.factCheck ?? null;
   const research = evidence.healthResearch ?? [];
   const news = evidence.newsArticles ?? [];
 
-  const breakdown = computeConfidence(evidence, synthesis, retrievalQueryCount);
-  const { verdict, credibility } = determineVerdict(breakdown.total, factCheck);
+  const breakdown = computeConfidence(evidence, synthesis, retrievalQueryCount, evaluation);
+  const { verdict, credibility } = determineVerdict(breakdown.total, factCheck, evaluation);
   const explanation = buildExplanation(verdict, synthesis, factCheck, research, news, breakdown);
   const context = buildContext(verdict, synthesis, research, news);
+
+  const finalExplanation = evaluation?.narrative_assessment
+    ? `${evaluation.narrative_assessment}\n\n${explanation}`
+    : explanation;
 
   return {
     containsClaims: true,
     verdict,
     credibility,
     confidence: breakdown.total,
-    explanation,
+    explanation: finalExplanation,
     context,
     retrievalQueries: [],  // Will be set by the pipeline
     centralClaim: synthesis.central_claim,
@@ -266,10 +309,10 @@ export function buildVerdict(
 
     factCheck,
     healthResearch: research.length > 0
-      ? { status: 'Scientifically supported', summary: explanation, sources: research }
+      ? { status: 'Scientifically supported', summary: finalExplanation, sources: research }
       : null,
     newsVerification: news.length > 0
-      ? { status: 'Widely reported', summary: explanation, sources: news }
+      ? { status: 'Widely reported', summary: finalExplanation, sources: news }
       : null,
 
     confidenceBreakdown: breakdown,

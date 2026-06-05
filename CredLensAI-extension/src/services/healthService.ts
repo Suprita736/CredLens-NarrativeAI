@@ -86,6 +86,34 @@ export class HealthService {
       }
 
       const summaryData = (await summaryRes.json()) as any;
+
+      // Fetch abstracts
+      const abstractUrl = `https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?db=pubmed&id=${ids.join(",")}&retmode=xml&rettype=abstract`;
+      let abstractMap: Record<string, string> = {};
+
+      try {
+        const abstractRes = await this.fetchWithTimeout(abstractUrl, { signal }, 8000);
+        if (abstractRes.ok) {
+          const xmlText = await abstractRes.text();
+          // Extract AbstractText blocks per article
+          const articleBlocks = xmlText.match(/<PubmedArticle>([\s\S]*?)<\/PubmedArticle>/g) || [];
+          for (const block of articleBlocks) {
+            const pmidMatch = block.match(/<PMID[^>]*>(\d+)<\/PMID>/);
+            const abstractMatch = block.match(/<AbstractText[^>]*>([\s\S]*?)<\/AbstractText>/g);
+            if (pmidMatch && abstractMatch) {
+              const pmid = pmidMatch[1];
+              const fullAbstract = abstractMatch
+                .map(a => a.replace(/<[^>]+>/g, ''))
+                .join(' ')
+                .slice(0, 500);
+              abstractMap[pmid] = fullAbstract;
+            }
+          }
+        }
+      } catch {
+        // abstracts are optional — don't fail the pipeline
+      }
+
       const articles: ResearchArticle[] = [];
 
       for (const id of ids) {
@@ -106,6 +134,7 @@ export class HealthService {
             authors,
             date,
             url,
+            abstract: abstractMap[id] || '',
           });
         }
       }
