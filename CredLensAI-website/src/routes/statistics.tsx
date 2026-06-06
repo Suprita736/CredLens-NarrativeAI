@@ -63,7 +63,19 @@ function StatisticsPage() {
           </p>
         </motion.div>
 
-        <div className="mt-10 grid gap-4 md:grid-cols-4">
+        {stats.overview.wrongClaimsLogged === 0 ? (
+          <div className="mt-16 glass rounded-3xl p-16 text-center max-w-2xl mx-auto">
+            <div className="inline-flex h-16 w-16 items-center justify-center rounded-2xl bg-white/5 text-muted-foreground mb-6">
+              <Activity className="h-8 w-8" />
+            </div>
+            <h3 className="text-2xl font-medium tracking-tight">No statistics available yet.</h3>
+            <p className="mt-3 text-base text-muted-foreground leading-relaxed">
+              Once CredLens analyzes videos and logs claims to Supabase, this dashboard will automatically populate with live trends, domain distributions, and correction metrics.
+            </p>
+          </div>
+        ) : (
+          <>
+            <div className="mt-10 grid gap-4 md:grid-cols-4">
           <Overview icon={Activity} label="Wrong claims today" value={stats.overview.wrongClaimsToday} accent="primary" />
           <Overview icon={Film} label="Videos reviewed today" value={stats.overview.videosReviewedToday} />
           <Overview
@@ -215,6 +227,8 @@ function StatisticsPage() {
             </ol>
           </Panel>
         </div>
+        </>
+        )}
       </div>
     </SiteShell>
   );

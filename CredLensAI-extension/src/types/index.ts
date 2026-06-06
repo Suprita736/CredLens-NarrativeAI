@@ -12,7 +12,6 @@ export interface NarrativeSynthesis {
   supporting_claims: string[];
   claim_domain: string;
   hedging_level: 'none' | 'low' | 'moderate' | 'high';
-  pubmed_queries?: string[];
 }
 
 // ── Verdict types ──────────────────────────────────────────────────────────────
@@ -62,6 +61,7 @@ export interface NewsArticle {
 }
 
 export interface EvidenceBundle {
+  factCheckStatus?: 'available' | 'unavailable';
   factCheck?: FactCheckResult | null;
   healthResearch?: ResearchArticle[];
   newsArticles?: NewsArticle[];
@@ -116,6 +116,9 @@ export interface NarrativeAnalysis {
   // Source attribution
   sourceName?: string;
   sourceUrl?: string;
+
+  // Supabase Archive reference
+  archiveId?: string;
 }
 
 // ── Cache Entry ────────────────────────────────────────────────────────────────
@@ -145,6 +148,8 @@ export interface BackgroundMessage {
   transcript?: string;
   transcriptLength?: number;
   currentProgress?: number;
+  videoTitle?: string;
+  channelName?: string;
 }
 
 export interface BackgroundResponse {
@@ -159,4 +164,6 @@ export interface BackgroundResponse {
 export interface ExtensionSettings {
   geminiApiKey?: string;         // DEPRECATED — kept for future fallback
   openRouterApiKey?: string;     // REQUIRED — primary synthesis layer
+  supabaseUrl?: string;
+  supabaseAnonKey?: string;
 }

@@ -63,6 +63,11 @@ export class FactCheckService {
 
       if (!response.ok) {
         console.error(`[FactCheckService] API error: ${response.status} ${response.statusText}`);
+        if (response.status === 403) {
+          console.log("[FactCheck] API unavailable");
+          console.log("[FactCheck] Continuing with remaining sources");
+          throw new Error("FACTCHECK_403");
+        }
         return null;
       }
 

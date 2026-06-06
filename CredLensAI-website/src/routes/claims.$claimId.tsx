@@ -44,13 +44,7 @@ function ClaimPage() {
   });
   const others = allClaims.filter(c => c.id !== claim.id);
 
-  // We load fetchStats here statically or just fallback to avoid more loaders
-  const { data: stats } = useQuery({
-    queryKey: ["stats"],
-    queryFn: () => import("@/lib/credlens-data").then(m => m.fetchStats()),
-  });
 
-  if (!stats) return null;
 
   return (
     <SiteShell>
@@ -83,22 +77,7 @@ function ClaimPage() {
           </h1>
         </motion.div>
 
-        {/* Top metrics */}
-        <div className="mt-10 grid gap-4 md:grid-cols-3">
-          <MetricCard
-            label="Wrong Claims Logged"
-            value={stats.overview.wrongClaimsLogged}
-            sub={`Across ${stats.overview.videosCovered} videos`}
-            accent="primary"
-          />
-          <MetricCard
-            label="Corrections Written"
-            value={stats.overview.correctionsWritten}
-            sub={`${stats.overview.coveragePct}% coverage`}
-            accent="secondary"
-          />
-          <MetricCard label="Top Domain" value={stats.overview.mostActiveDomain} sub="Most frequent category" />
-        </div>
+
 
         {/* Main */}
         <div className="mt-12 grid gap-8 lg:grid-cols-[1.15fr_1fr]">
@@ -115,7 +94,6 @@ function ClaimPage() {
                 </div>
                 <div className="space-y-2 text-sm">
                   <KV k="Video ID" v={<code className="font-mono text-xs">{claim.videoId}</code>} />
-                  <KV k="Channel" v={claim.channel} />
                   <KV k="Detected" v={claim.detectedAt} />
                   <KV
                     k="CredLens Verdict"
@@ -128,12 +106,12 @@ function ClaimPage() {
                   <div className="pt-2">
                     <div className="flex items-center justify-between text-xs text-muted-foreground mb-1">
                       <span>Confidence</span>
-                      <span>{Math.round(claim.confidence * 100)}%</span>
+                      <span>{Math.round(claim.confidence)}%</span>
                     </div>
                     <div className="h-1.5 rounded-full bg-white/5 overflow-hidden">
                       <motion.div
                         initial={{ width: 0 }}
-                        animate={{ width: `${claim.confidence * 100}%` }}
+                        animate={{ width: `${claim.confidence}%` }}
                         transition={{ duration: 1, ease: "easeOut" }}
                         className="h-full bg-gradient-to-r from-primary to-secondary"
                       />
@@ -182,7 +160,6 @@ function ClaimPage() {
                 <ShieldCheck className="h-4 w-4 mt-0.5 text-primary shrink-0" />
                 <div>
                   <div className="font-medium">Result · Insufficient Evidence</div>
-                  <div className="text-muted-foreground mt-1">{claim.evidence.missing}</div>
                 </div>
               </div>
             </Card>
@@ -190,54 +167,20 @@ function ClaimPage() {
 
           {/* Right column */}
           <div className="space-y-8">
-            {/* Corrected claims */}
-            <Card>
-              <CardHeader icon={Sparkles} title="Corrected Claims" accent />
-              <div className="mt-5 space-y-3">
-                {claim.corrected.map((cc, i) => (
-                  <details
-                    key={i}
-                    className="group rounded-2xl border border-border bg-white/[0.02] open:border-primary/30 open:bg-primary/[0.04] transition"
-                    open={i === 0}
-                  >
-                    <summary className="cursor-pointer list-none p-5 flex items-start justify-between gap-3">
-                      <div>
-                        <div className="text-[11px] uppercase tracking-wider text-muted-foreground">
-                          Original
-                        </div>
-                        <div className="mt-1 text-sm line-through decoration-destructive/60 text-muted-foreground">
-                          {cc.original}
-                        </div>
-                        <div className="mt-3 text-[11px] uppercase tracking-wider text-primary">
-                          Correction
-                        </div>
-                        <div className="mt-1 text-sm">{cc.correction}</div>
-                      </div>
-                      <ArrowRight className="h-4 w-4 text-muted-foreground transition group-open:rotate-90 shrink-0" />
-                    </summary>
-                    <div className="px-5 pb-5 -mt-1 grid gap-3 text-sm">
-                      <div className="flex items-center gap-2">
-                        <span className="text-[11px] uppercase tracking-wider text-muted-foreground">
-                          Evidence strength
-                        </span>
-                        <StrengthBadge value={cc.evidenceStrength} />
-                      </div>
-                      <p className="text-muted-foreground leading-relaxed">{cc.explanation}</p>
-                    </div>
-                  </details>
-                ))}
-              </div>
-            </Card>
+
 
             {/* Evolution */}
             <Card glow>
               <CardHeader icon={CheckCircle2} title="Claim Evolution" accent />
               <ol className="mt-6 relative space-y-6 before:absolute before:left-[15px] before:top-2 before:bottom-2 before:w-px before:bg-gradient-to-b before:from-primary/60 before:via-secondary/40 before:to-transparent">
                 {[
-                  { k: "Original Claim", v: claim.originalClaims[0], tone: "destructive" as const },
-                  { k: "CredLens Assessment", v: "Insufficient Evidence", tone: "muted" as const },
-                  { k: "Expert Correction", v: claim.corrected[0]?.correction ?? "—", tone: "primary" as const },
-                  { k: "Evidence Strength", v: claim.corrected[0]?.evidenceStrength ?? "—", tone: "secondary" as const },
+                  { k: "Original Claim", v: claim.originalClaims[0] || claim.centralClaim, tone: "destructive" as const },
+                  {
+                    k: claim.expertCorrection ? "Expert Correction" : "CredLens Assessment",
+                    v: claim.expertCorrection || claim.aiAssessment || claim.evidence?.failureReason || "Insufficient Evidence",
+                    tone: "primary" as const
+                  },
+                  { k: "Evidence Strength", v: claim.evidenceStrength || "Insufficient", tone: "secondary" as const },
                 ].map((step, i) => (
                   <motion.li
                     key={i}
@@ -248,15 +191,14 @@ function ClaimPage() {
                     className="relative pl-10"
                   >
                     <span
-                      className={`absolute left-0 top-1 inline-flex h-8 w-8 items-center justify-center rounded-full border ${
-                        step.tone === "primary"
+                      className={`absolute left-0 top-1 inline-flex h-8 w-8 items-center justify-center rounded-full border ${step.tone === "primary"
                           ? "bg-primary/15 border-primary/40 text-primary"
                           : step.tone === "secondary"
-                          ? "bg-secondary/15 border-secondary/40 text-secondary"
-                          : step.tone === "destructive"
-                          ? "bg-destructive/15 border-destructive/40 text-destructive"
-                          : "bg-white/5 border-border text-muted-foreground"
-                      }`}
+                            ? "bg-secondary/15 border-secondary/40 text-secondary"
+                            : step.tone === "destructive"
+                              ? "bg-destructive/15 border-destructive/40 text-destructive"
+                              : "bg-white/5 border-border text-muted-foreground"
+                        }`}
                     >
                       {i + 1}
                     </span>
@@ -268,49 +210,53 @@ function ClaimPage() {
             </Card>
 
             {/* Sources */}
-            <Card>
-              <CardHeader icon={BookOpen} title="Sources" />
-              <div className="mt-5 grid gap-3 sm:grid-cols-2">
-                {claim.sources.map((s, i) => (
-                  <a
-                    key={i}
-                    href={s.url}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="group rounded-xl border border-border bg-white/[0.02] p-4 hover:border-primary/40 transition flex items-start justify-between gap-3"
-                  >
-                    <div>
-                      <div className="text-sm font-medium">{s.name}</div>
-                      <div className="mt-0.5 text-xs text-muted-foreground">{s.type}</div>
-                    </div>
-                    <ExternalLink className="h-4 w-4 text-muted-foreground group-hover:text-primary" />
-                  </a>
-                ))}
-              </div>
-            </Card>
+            {claim.sources && claim.sources.length > 0 && (
+              <Card>
+                <CardHeader icon={BookOpen} title="Sources" />
+                <div className="mt-5 grid gap-3 sm:grid-cols-2">
+                  {claim.sources.map((s, i) => (
+                    <a
+                      key={i}
+                      href={s.url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="group rounded-xl border border-border bg-white/[0.02] p-4 hover:border-primary/40 transition flex items-start justify-between gap-3"
+                    >
+                      <div>
+                        <div className="text-sm font-medium">{s.name}</div>
+                        <div className="mt-0.5 text-xs text-muted-foreground">{s.type}</div>
+                      </div>
+                      <ExternalLink className="h-4 w-4 text-muted-foreground group-hover:text-primary" />
+                    </a>
+                  ))}
+                </div>
+              </Card>
+            )}
           </div>
         </div>
 
         {/* More claims */}
-        <div className="mt-20">
-          <h3 className="text-xl font-semibold tracking-tight mb-6">More from the archive</h3>
-          <div className="grid gap-4 md:grid-cols-2">
-            {others.map((o) => (
-              <Link
-                key={o.id}
-                to="/claims/$claimId"
-                params={{ claimId: o.id }}
-                className="glass rounded-2xl p-5 hover:border-primary/40 transition flex items-center justify-between gap-3"
-              >
-                <div>
-                  <div className="text-xs uppercase tracking-wider text-muted-foreground">{o.domain}</div>
-                  <div className="mt-1 text-sm font-medium">{o.centralClaim}</div>
-                </div>
-                <ArrowRight className="h-4 w-4 text-muted-foreground shrink-0" />
-              </Link>
-            ))}
+        {others.length > 0 && (
+          <div className="mt-20">
+            <h3 className="text-xl font-semibold tracking-tight mb-6">More from the archive</h3>
+            <div className="grid gap-4 md:grid-cols-2">
+              {others.slice(0, 4).map((o) => (
+                <Link
+                  key={o.id}
+                  to="/claims/$claimId"
+                  params={{ claimId: o.id }}
+                  className="glass rounded-2xl p-5 hover:border-primary/40 transition flex items-center justify-between gap-3"
+                >
+                  <div>
+                    <div className="text-xs uppercase tracking-wider text-muted-foreground">{o.domain}</div>
+                    <div className="mt-1 text-sm font-medium">{o.centralClaim}</div>
+                  </div>
+                  <ArrowRight className="h-4 w-4 text-muted-foreground shrink-0" />
+                </Link>
+              ))}
+            </div>
           </div>
-        </div>
+        )}
       </div>
     </SiteShell>
   );
@@ -339,9 +285,8 @@ function CardHeader({
   return (
     <div className="flex items-center gap-3">
       <span
-        className={`inline-flex h-9 w-9 items-center justify-center rounded-xl ${
-          accent ? "bg-gradient-to-br from-primary/25 to-secondary/20 text-primary" : "bg-white/5 text-muted-foreground"
-        }`}
+        className={`inline-flex h-9 w-9 items-center justify-center rounded-xl ${accent ? "bg-gradient-to-br from-primary/25 to-secondary/20 text-primary" : "bg-white/5 text-muted-foreground"
+          }`}
       >
         <Icon className="h-4 w-4" />
       </span>
@@ -370,9 +315,8 @@ function EvidenceStat({
 }) {
   return (
     <div
-      className={`rounded-xl border p-4 ${
-        highlight ? "border-destructive/30 bg-destructive/5" : "border-border bg-white/[0.02]"
-      }`}
+      className={`rounded-xl border p-4 ${highlight ? "border-destructive/30 bg-destructive/5" : "border-border bg-white/[0.02]"
+        }`}
     >
       <div className="font-display text-2xl font-semibold">{value}</div>
       <div className="mt-1 text-[11px] uppercase tracking-wider text-muted-foreground leading-tight">
@@ -395,36 +339,5 @@ function StrengthBadge({ value }: { value: "Strong" | "Moderate" | "Limited" }) 
   );
 }
 
-function MetricCard({
-  label,
-  value,
-  sub,
-  accent,
-}: {
-  label: string;
-  value: string | number;
-  sub: string;
-  accent?: "primary" | "secondary";
-}) {
-  return (
-    <motion.div
-      initial={{ opacity: 0, y: 14 }}
-      whileInView={{ opacity: 1, y: 0 }}
-      viewport={{ once: true }}
-      transition={{ duration: 0.5 }}
-      className="glass rounded-3xl p-6 relative overflow-hidden"
-    >
-      <div
-        className={`absolute -top-20 -right-20 h-40 w-40 rounded-full blur-3xl ${
-          accent === "primary" ? "bg-primary/25" : accent === "secondary" ? "bg-secondary/25" : "bg-white/5"
-        }`}
-      />
-      <div className="relative">
-        <div className="text-xs uppercase tracking-wider text-muted-foreground">{label}</div>
-        <div className="mt-3 font-display text-4xl font-semibold">{value}</div>
-        <div className="mt-1 text-sm text-muted-foreground">{sub}</div>
-      </div>
-    </motion.div>
-  );
-}
+
 

@@ -135,6 +135,12 @@ const YouTubeShortsDetector = () => {
     console.log(`[Transcript] Final Transcript Length: ${transcript.length}`);
     console.log(`[Transcript] Final Transcript Preview: ${transcript.substring(0, 500)}`);
 
+    const titleElement = document.querySelector('ytd-reel-video-renderer[is-active] h2.title');
+    const videoTitle = titleElement ? titleElement.textContent?.trim() : 'Unknown Title';
+
+    const channelElement = document.querySelector('ytd-reel-video-renderer[is-active] ytd-channel-name .yt-simple-endpoint');
+    const channelName = channelElement ? channelElement.textContent?.trim() : 'Unknown Channel';
+
     try {
       setActiveVideo(prev => prev ? { ...prev, status: 'loading' } : null);
       
@@ -143,7 +149,9 @@ const YouTubeShortsDetector = () => {
         videoId,
         transcript,
         transcriptLength: transcript.length,
-        currentProgress
+        currentProgress,
+        videoTitle,
+        channelName
       });
     } catch (err) {
       console.error('[Content] Port error sending verification request:', err);
@@ -193,15 +201,32 @@ const YouTubeShortsDetector = () => {
 
       if (!activeVid) return;
 
-      const currentLength = stabilizerRef.current.getCleanTranscript().length;
+      const duration = activeVid.duration || 0;
+      const watchedSeconds = activeVid.currentTime || 0;
 
-      // Gate conditions:
-      const hitGate = ratio >= 0.85 || isEnded;
-      if (!hitGate) {
-        if (Math.random() < 0.2) {
-          // Sample logging to avoid spamming every second
-          console.log(`[WatchGate] Progress: ${Math.round(ratio * 100)}%`);
-        }
+      if (watchedSeconds < 3 && !isEnded) {
+        console.log('[WatchGate] Skip: insufficient_view_time');
+        return;
+      }
+
+      const isStable = stabilizerRef.current.hasMinimumContent();
+
+      let thresholdMet = false;
+      if (duration <= 15) {
+        thresholdMet = ratio >= 0.60 && watchedSeconds >= 4;
+      } else if (duration <= 30) {
+        thresholdMet = ratio >= 0.70 && watchedSeconds >= 10;
+      } else if (duration <= 60) {
+        thresholdMet = ratio >= 0.80 && watchedSeconds >= 20;
+      } else {
+        thresholdMet = ratio >= 0.85 && watchedSeconds >= 30;
+      }
+
+      if (isEnded || thresholdMet) {
+        console.log('[WatchGate] Trigger: watch_threshold_met');
+      } else if (isStable) {
+        console.log('[WatchGate] Trigger: transcript_complete');
+      } else {
         return;
       }
 
@@ -210,12 +235,14 @@ const YouTubeShortsDetector = () => {
       
       let shouldTrigger = false;
       
+      const currentLength = stabilizerRef.current.getCleanTranscript().length;
+      
       if (isFirstAnalysis) {
         shouldTrigger = true;
         if (isEnded) {
           console.log(`[WatchGate] Final verification triggered at completion`);
         } else {
-          console.log(`[WatchGate] Verification triggered at 85%`);
+          console.log(`[WatchGate] Verification triggered at threshold`);
         }
       } else {
         // Cache refresh logic

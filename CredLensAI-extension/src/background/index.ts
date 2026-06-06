@@ -22,9 +22,13 @@
 import { QueueManager } from './queueManager';
 import { CacheService } from '../services/cacheService';
 import { RetrievalEngine } from '../services/retrievalEngine';
-import { synthesizeNarrative, buildRetrievalQueries } from '../services/narrativeSynthesisService';
+import { synthesizeNarrative } from '../services/narrativeSynthesisService';
+import { generateRetrievalQueries } from '../services/queryGenerationService';
+import { isClaimWorthy } from '../utils/claimWorthinessGate';
 import { buildVerdict, buildNoClaimsVerdict } from '../utils/verdictBuilder';
 import { evaluateEvidence } from '../services/evidenceEvaluationService';
+import { syncInsufficientEvidence } from '../services/supabaseSync';
+import { supabaseConfig } from '../config/supabase';
 import type { NarrativeAnalysis, BackgroundMessage, BackgroundResponse } from '../types';
 
 // ── Lifecycle hooks ────────────────────────────────────────────────────────────
@@ -51,10 +55,10 @@ chrome.runtime.onConnect.addListener((port) => {
   let activeVideoId: string | null = null;
 
   port.onMessage.addListener(async (message: BackgroundMessage) => {
-    const { action, videoId, transcript, transcriptLength = 0, currentProgress = 0 } = message;
+    const { action, videoId, transcript, transcriptLength = 0, currentProgress = 0, videoTitle = 'Unknown Title', channelName = 'Unknown Channel' } = message;
     if (action === 'VERIFY_TRANSCRIPT' && videoId && transcript) {
       activeVideoId = videoId;
-      await runNarrativePipeline(videoId, transcript, transcriptLength, currentProgress, port);
+      await runNarrativePipeline(videoId, videoTitle, channelName, transcript, transcriptLength, currentProgress, port);
     } else if (action === 'CANCEL_VERIFICATION' && videoId) {
       console.log(`[Background] Cancel requested for ${videoId}`);
       QueueManager.cancel(videoId);
@@ -71,6 +75,8 @@ chrome.runtime.onConnect.addListener((port) => {
 
 async function runNarrativePipeline(
   videoId: string,
+  videoTitle: string,
+  channelName: string,
   transcript: string,
   transcriptLength: number,
   currentProgress: number,
@@ -83,7 +89,7 @@ async function runNarrativePipeline(
     // ── Step 1: Load API keys ─────────────────────────────────────────────────
     const storage = await chrome.storage.local.get([
       'geminiApiKey',
-      'openRouterApiKey',
+      'openRouterApiKey'
     ]) as { geminiApiKey?: string; openRouterApiKey?: string };
 
     const openRouterApiKey = storage.openRouterApiKey || '';
@@ -134,6 +140,14 @@ async function runNarrativePipeline(
       return;
     }
 
+    if (!isClaimWorthy(transcript)) {
+      const skippedResult = buildNoClaimsVerdict('Content skipped by Claim Worthiness Gate (not factual or verifiable).');
+      await CacheService.set(videoId, transcriptLength, currentProgress, skippedResult, {});
+      postResponse(port, { status: 'completed', videoId, analysis: skippedResult });
+      QueueManager.complete(videoId);
+      return;
+    }
+
     if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
 
     // ── Step 6: Haiku Narrative Synthesis ──────────────────────────────────────
@@ -146,7 +160,25 @@ async function runNarrativePipeline(
     if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
 
     // ── Step 7: Build retrieval queries from synthesis ─────────────────────────
-    const retrievalQueries = buildRetrievalQueries(synthesis);
+    console.log('[Background] ===> Pass 1.5 Query Generation START');
+    const generated = await generateRetrievalQueries(synthesis, openRouterApiKey, signal);
+    
+    let maxQueries = 6;
+    const d = synthesis.claim_domain.toLowerCase();
+    if (d.includes('politics') || d.includes('current_events')) {
+      maxQueries = 8;
+    }
+
+    const retrievalQueries = [
+      ...generated.pubmedQueries,
+      ...generated.factCheckQueries,
+      ...generated.newsQueries
+    ].filter(Boolean).slice(0, maxQueries);
+
+    if (retrievalQueries.length === 0) {
+      retrievalQueries.push(synthesis.central_claim);
+    }
+    console.log('[Background] ===> Pass 1.5 Query Generation COMPLETE', retrievalQueries);
 
     if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
 
@@ -187,6 +219,37 @@ async function runNarrativePipeline(
     );
 
     if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
+
+    // --- TASK 3 ASYNC SUPABASE SYNC ---
+    const STORABLE_VERDICTS = ["Insufficient Evidence", "Exaggerated", "Misleading"];
+    
+    if (
+      STORABLE_VERDICTS.includes(analysis.verdict) &&
+      analysis.confidence >= 40
+    ) {
+      try {
+        const archiveId = await syncInsufficientEvidence(
+          videoId,
+          videoTitle,
+          channelName,
+          transcript,
+          analysis,
+          synthesis,
+          evidence,
+          evaluation,
+          supabaseConfig.url,
+          supabaseConfig.anonKey
+        );
+        if (archiveId) {
+          analysis.archiveId = archiveId;
+        }
+      } catch (err) {
+        console.error('[SupabaseSync] Uncaught error:', err);
+      }
+    } else {
+      console.log('[SupabaseSync] Upload skipped');
+    }
+    // ---------------------------------------
 
     // ── Step 11: Cache and respond ────────────────────────────────────────────
     await CacheService.set(videoId, transcriptLength, currentProgress, analysis, evidence, synthesis);

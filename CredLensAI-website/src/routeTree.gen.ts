@@ -11,6 +11,7 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as StatisticsRouteImport } from './routes/statistics'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as ClaimsIndexRouteImport } from './routes/claims.index'
 import { Route as ClaimsClaimIdRouteImport } from './routes/claims.$claimId'
 
 const StatisticsRoute = StatisticsRouteImport.update({
@@ -23,6 +24,11 @@ const IndexRoute = IndexRouteImport.update({
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ClaimsIndexRoute = ClaimsIndexRouteImport.update({
+  id: '/claims/',
+  path: '/claims/',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ClaimsClaimIdRoute = ClaimsClaimIdRouteImport.update({
   id: '/claims/$claimId',
   path: '/claims/$claimId',
@@ -33,30 +39,34 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/statistics': typeof StatisticsRoute
   '/claims/$claimId': typeof ClaimsClaimIdRoute
+  '/claims/': typeof ClaimsIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/statistics': typeof StatisticsRoute
   '/claims/$claimId': typeof ClaimsClaimIdRoute
+  '/claims': typeof ClaimsIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/statistics': typeof StatisticsRoute
   '/claims/$claimId': typeof ClaimsClaimIdRoute
+  '/claims/': typeof ClaimsIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/statistics' | '/claims/$claimId'
+  fullPaths: '/' | '/statistics' | '/claims/$claimId' | '/claims/'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/statistics' | '/claims/$claimId'
-  id: '__root__' | '/' | '/statistics' | '/claims/$claimId'
+  to: '/' | '/statistics' | '/claims/$claimId' | '/claims'
+  id: '__root__' | '/' | '/statistics' | '/claims/$claimId' | '/claims/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   StatisticsRoute: typeof StatisticsRoute
   ClaimsClaimIdRoute: typeof ClaimsClaimIdRoute
+  ClaimsIndexRoute: typeof ClaimsIndexRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -75,6 +85,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/claims/': {
+      id: '/claims/'
+      path: '/claims'
+      fullPath: '/claims/'
+      preLoaderRoute: typeof ClaimsIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/claims/$claimId': {
       id: '/claims/$claimId'
       path: '/claims/$claimId'
@@ -89,7 +106,18 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   StatisticsRoute: StatisticsRoute,
   ClaimsClaimIdRoute: ClaimsClaimIdRoute,
+  ClaimsIndexRoute: ClaimsIndexRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
   ._addFileTypes<FileRouteTypes>()
+
+import type { getRouter } from './router.tsx'
+import type { startInstance } from './start.ts'
+declare module '@tanstack/react-start' {
+  interface Register {
+    ssr: true
+    router: Awaited<ReturnType<typeof getRouter>>
+    config: Awaited<ReturnType<typeof startInstance.getOptions>>
+  }
+}

@@ -77,11 +77,11 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
     meta: [
       { charSet: "utf-8" },
       { name: "viewport", content: "width=device-width, initial-scale=1" },
-      { title: "CredLens — Insufficient Evidence Tracker" },
-      { name: "description", content: "Lovable Generated Project" },
+      { title: "CredLensAI" },
+      { name: "description", content: "CredLensAI is a Chrome extension that uses AI to analyze YouTube video transcripts and determine whether they are misleading or not." },
       { name: "author", content: "Lovable" },
-      { property: "og:title", content: "Lovable App" },
-      { property: "og:description", content: "Lovable Generated Project" },
+      { property: "og:title", content: "CredLensAI" },
+      { property: "og:description", content: "CredLensAI is a Chrome extension that uses AI to analyze YouTube video transcripts and determine whether they are misleading or not." },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary" },
       { name: "twitter:site", content: "@Lovable" },
@@ -90,6 +90,11 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
       {
         rel: "stylesheet",
         href: appCss,
+      },
+      {
+        rel: "icon",
+        href: "/favicon.svg",
+        type: "image/svg+xml",
       },
     ],
   }),

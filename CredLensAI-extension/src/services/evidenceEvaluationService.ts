@@ -21,8 +21,14 @@ export interface ClaimEvaluation {
   reasoning: string;
 }
 
+export interface EvidenceClassification {
+  source_id: string;
+  classification: SupportVerdict;
+}
+
 export interface EvidenceEvaluation {
   claim_evaluations: ClaimEvaluation[];
+  evidence_classifications: EvidenceClassification[];
   overall_verdict: OverallVerdict;
   overall_confidence: number; // 0-100
   narrative_assessment: string; // 2 sentences shown to user
@@ -72,9 +78,23 @@ function buildEvaluationPrompt(
     .map((c, i) => `${i + 1}. ${c}`)
     .join('\n');
 
+  let domainWeights = "All sources equally";
+  const d = synthesis.claim_domain.toLowerCase();
+  if (d.includes('health') || d.includes('nutrition') || d.includes('medicine')) {
+    domainWeights = "Primary evidence source: PubMed (80%), Supplementary source: News (20%)";
+  } else if (d.includes('politics')) {
+    domainWeights = "Primary evidence source: Fact Check (50%), Supplementary source: News (50%)";
+  } else if (d.includes('current')) {
+    domainWeights = "Primary evidence source: News (70%), Supplementary source: Fact Check (30%)";
+  } else if (d.includes('science')) {
+    domainWeights = "Primary evidence source: PubMed (70%), Supplementary source: News (30%)";
+  }
+
   return `You are an evidence analyst. Your job is to determine whether retrieved evidence supports or contradicts a health claim.
 
 Central claim: "${synthesis.central_claim}"
+Domain: ${synthesis.claim_domain}
+Weights: ${domainWeights}
 
 Supporting claims:
 ${supportingClaimsList || '(none)'}
@@ -86,6 +106,7 @@ For each supporting claim, output a JSON object in claim_evaluations.
 Then output a final overall assessment.
 
 Rules:
+- The evaluator should primarily rely on the Primary evidence source when judging claims.
 - Evidence that applies only to diseased populations does NOT support claims about healthy adults.
 - A single study finding is weaker than multiple converging findings.
 - Qualified conclusions ("may", "appears to") reduce evidence_confidence.
@@ -103,6 +124,12 @@ Return only valid JSON. No preamble. No markdown.
       "evidence_confidence": 0-100,
       "key_caveat": "one sentence about who this applies to or conditions",
       "reasoning": "one sentence about what the evidence actually says"
+    }
+  ],
+  "evidence_classifications": [
+    {
+      "source_id": "exact [1] or [2] reference prefix from retrieved evidence",
+      "classification": "supports | contradicts | mixed | unrelated"
     }
   ],
   "overall_verdict": "supports | exaggerated | misleading | insufficient_evidence",

@@ -18,7 +18,7 @@ import { SiteShell } from "@/components/site-shell";
 export const Route = createFileRoute("/")({
   head: () => ({
     meta: [
-      { title: "CredLens — Understanding Narratives. Correcting Misinformation." },
+      { title: "CredLensAI" },
       {
         name: "description",
         content:
@@ -33,25 +33,26 @@ export const Route = createFileRoute("/")({
     ],
   }),
   loader: async () => {
-    const { fetchClaims } = await import("@/lib/credlens-data");
-    return fetchClaims();
+    const { fetchClaims, fetchStats } = await import("@/lib/credlens-data");
+    const [claims, stats] = await Promise.all([fetchClaims(), fetchStats()]);
+    return { claims, stats };
   },
   component: Landing,
 });
 
 function Landing() {
-  const claims = Route.useLoaderData();
+  const { claims, stats } = Route.useLoaderData();
   return (
     <SiteShell>
-      <Hero />
+      <Hero stats={stats} />
       <HowItWorks />
       <Why />
-      <Featured />
+      <Featured claims={claims} />
     </SiteShell>
   );
 }
 
-function Hero() {
+function Hero({ stats }: { stats: any }) {
   return (
     <section className="relative overflow-hidden">
       <div className="absolute inset-0 grid-bg" />
@@ -84,8 +85,7 @@ function Hero() {
           className="mt-10 flex flex-wrap items-center justify-center gap-3"
         >
           <Link
-            to="/claims/$claimId"
-            params={{ claimId: "cl_001" }}
+            to="/claims"
             className="group inline-flex items-center gap-2 rounded-full bg-primary px-5 py-3 text-sm font-medium text-primary-foreground glow-accent hover:translate-y-[-1px] transition"
           >
             Explore Claims
@@ -105,9 +105,9 @@ function Hero() {
           className="mx-auto mt-20 grid max-w-3xl grid-cols-3 gap-4"
         >
           {[
-            { k: "128", v: "Wrong claims logged" },
-            { k: "92", v: "Corrections written" },
-            { k: "42", v: "Videos covered" },
+            { k: stats.overview.wrongClaimsLogged, v: "Wrong claims logged" },
+            { k: stats.overview.correctionsWritten, v: "Corrections written" },
+            { k: stats.overview.videosCovered, v: "Videos covered" },
           ].map((m) => (
             <div key={m.v} className="glass rounded-2xl px-5 py-5 text-left">
               <div className="font-display text-3xl font-semibold">{m.k}</div>
@@ -204,56 +204,75 @@ function Why() {
   );
 }
 
-function Featured() {
-  const claims = Route.useLoaderData() as any[];
+function Featured({ claims }: { claims: any[] }) {
   return (
     <section className="mx-auto max-w-7xl px-6 py-20">
       <div className="flex items-end justify-between gap-4 mb-10">
         <SectionHeader eyebrow="Featured corrections" title="Recently reviewed claims" />
-        <Link
-          to="/claims/$claimId"
-          params={{ claimId: "cl_001" }}
-          className="hidden md:inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
-        >
-          Open archive <ArrowRight className="h-3.5 w-3.5" />
-        </Link>
-      </div>
-      <div className="grid gap-5 md:grid-cols-3">
-        {claims.map((c, i) => (
-          <motion.div
-            key={c.id}
-            initial={{ opacity: 0, y: 20 }}
-            whileInView={{ opacity: 1, y: 0 }}
-            viewport={{ once: true, margin: "-60px" }}
-            transition={{ duration: 0.5, delay: i * 0.08 }}
+        {claims.length > 0 && (
+          <Link
+            to={`/claims/$claimId`}
+            params={{ claimId: claims[0]?.id || "" }}
+            className="hidden md:inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
           >
-            <Link
-              to="/claims/$claimId"
-              params={{ claimId: c.id }}
-              className="group block glass rounded-3xl p-6 h-full hover:border-primary/40 transition"
-            >
-              <div className="flex items-center justify-between mb-4">
-                <span className="text-xs uppercase tracking-wider text-muted-foreground">{c.domain}</span>
-                <span className="text-xs rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 text-primary">
-                  {Math.round(c.confidence * 100)}% conf.
-                </span>
-              </div>
-              <h3 className="text-base font-medium leading-snug">{c.centralClaim}</h3>
-              <div className="mt-4 rounded-xl bg-white/[0.03] border border-border p-4">
-                <div className="text-[11px] uppercase tracking-wider text-muted-foreground mb-1">Verdict</div>
-                <div className="text-sm">{c.verdict}</div>
-              </div>
-              <div className="mt-4 rounded-xl bg-white/[0.03] border border-border p-4">
-                <div className="text-[11px] uppercase tracking-wider text-muted-foreground mb-1">Correction preview</div>
-                <div className="text-sm text-muted-foreground line-clamp-3">{c.corrected[0]?.correction}</div>
-              </div>
-              <div className="mt-5 inline-flex items-center gap-1 text-sm text-primary group-hover:gap-2 transition-all">
-                Open claim <ArrowRight className="h-3.5 w-3.5" />
-              </div>
-            </Link>
-          </motion.div>
-        ))}
+            Open archive <ArrowRight className="h-3.5 w-3.5" />
+          </Link>
+        )}
       </div>
+
+      {claims.length === 0 ? (
+        <div className="glass rounded-3xl p-12 text-center">
+          <div className="inline-flex h-12 w-12 items-center justify-center rounded-xl bg-white/5 text-muted-foreground mb-4">
+            <Inbox className="h-6 w-6" />
+          </div>
+          <h3 className="text-lg font-medium">No analyzed claims yet.</h3>
+          <p className="mt-2 text-sm text-muted-foreground">The extension hasn't logged any claims yet.</p>
+        </div>
+      ) : (
+        <div className="grid gap-5 md:grid-cols-3">
+          {claims.slice(0, 3).map((c, i) => (
+            <motion.div
+              key={c.id}
+              initial={{ opacity: 0, y: 20 }}
+              whileInView={{ opacity: 1, y: 0 }}
+              viewport={{ once: true, margin: "-60px" }}
+              transition={{ duration: 0.5, delay: i * 0.08 }}
+            >
+              <Link
+                to="/claims/$claimId"
+                params={{ claimId: c.id }}
+                className="group block glass rounded-3xl p-6 h-full hover:border-primary/40 transition flex flex-col"
+              >
+                <div className="flex items-center justify-between mb-4">
+                  <span className="text-xs uppercase tracking-wider text-muted-foreground">{c.domain}</span>
+                  <span className="text-xs rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 text-primary">
+                    {Math.round(c.confidence)}% conf.
+                  </span>
+                </div>
+                <h3 className="text-base font-medium leading-snug">{c.centralClaim}</h3>
+
+                <div className="mt-auto pt-4 space-y-4">
+                  <div className="rounded-xl bg-white/[0.03] border border-border p-4">
+                    <div className="text-[11px] uppercase tracking-wider text-muted-foreground mb-1">Verdict</div>
+                    <div className="text-sm">{c.verdict}</div>
+                  </div>
+
+                  {c.corrected && c.corrected.length > 0 && (
+                    <div className="rounded-xl bg-white/[0.03] border border-border p-4">
+                      <div className="text-[11px] uppercase tracking-wider text-muted-foreground mb-1">Correction preview</div>
+                      <div className="text-sm text-muted-foreground line-clamp-3">{c.corrected[0]?.correction}</div>
+                    </div>
+                  )}
+
+                  <div className="mt-5 inline-flex items-center gap-1 text-sm text-primary group-hover:gap-2 transition-all">
+                    Open claim <ArrowRight className="h-3.5 w-3.5" />
+                  </div>
+                </div>
+              </Link>
+            </motion.div>
+          ))}
+        </div>
+      )}
     </section>
   );
 }

@@ -52,7 +52,7 @@ const App = () => {
   const features = [
     {
       icon: <Search size={12} className="text-blue-400" />,
-      label: "Google Fact Check API",
+      label: "Fact Check Verification",
       detail: "Live fact-check database lookup (via Gemini Key)",
     },
     {
@@ -67,7 +67,7 @@ const App = () => {
     },
     {
       icon: <Zap size={12} className="text-amber-400" />,
-      label: "Optional LLM Synthesis",
+      label: "Narrative Synthesis Engine",
       detail: "Gemini / OpenRouter GPT-4o-mini",
     },
     {
@@ -88,9 +88,6 @@ const App = () => {
           <h1 className="text-base font-bold tracking-tight leading-none">CredLens AI</h1>
           <p className="text-[10px] text-slate-400 mt-0.5">YouTube Shorts Fact Verifier</p>
         </div>
-        <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-blue-900/60 border border-blue-700/50 text-blue-300 font-bold uppercase tracking-wider shrink-0">
-          Phase 5
-        </span>
       </div>
 
       {/* Body */}
@@ -98,7 +95,7 @@ const App = () => {
         {/* Gemini API Key Input */}
         <div className="space-y-1.5">
           <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
-            Gemini API Key (Optional)
+            Gemini API Key
           </label>
           <div className="relative">
             <input
@@ -120,7 +117,7 @@ const App = () => {
         {/* OpenRouter API Key Input */}
         <div className="space-y-1.5">
           <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
-            OpenRouter API Key (Optional)
+            OpenRouter API Key
           </label>
           <div className="relative">
             <input
@@ -177,7 +174,7 @@ const App = () => {
           >
             <span className="flex items-center gap-1.5">
               <Info size={11} className="text-slate-500" />
-              Phase 5 Retrieval-First Optimization
+              System Capabilities
             </span>
             {showTips ? (
               <ChevronUp size={11} className="text-slate-500" />
@@ -213,7 +210,7 @@ const App = () => {
       {/* Footer */}
       <div className="px-5 pb-4 pt-2 border-t border-slate-900">
         <p className="text-[9px] text-slate-600 text-center leading-relaxed">
-          CredLens AI · Phase 5 · Retrieval-First, LLM-Last-Resort.
+          CredLens AI · Retrieval-First, LLM-Last-Resort.
           Dynamic category-routing and local verifiability filter.
         </p>
       </div>

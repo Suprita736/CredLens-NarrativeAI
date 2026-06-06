@@ -34,8 +34,7 @@ Return JSON only. No markdown. No explanation. No preamble.
   "central_claim": "The single most important factual claim made in this video",
   "supporting_claims": ["up to 4 supporting factual claims"],
   "claim_domain": "one of: health, nutrition, medicine, politics, current_events, science, technology, finance, general",
-  "hedging_level": "one of: none, low, moderate, high",
-  "pubmed_queries": ["3-6 word MeSH-style query", "3-6 word MeSH-style query", "3-6 word MeSH-style query"]
+  "hedging_level": "one of: none, low, moderate, high"
 }
 
 Rules:
@@ -46,43 +45,7 @@ Rules:
 5. Determine the most appropriate claim_domain.
 6. Detect hedging_level: "none" if claims are stated as absolute fact, "high" if heavily qualified with "may", "might", "some studies suggest", etc.
 7. Do NOT extract keywords. Do NOT extract noun chunks. Do NOT rank sentences.
-8. Focus on factual claims that can be verified against evidence, not opinions or commands.
-9. For pubmed_queries: generate 2-4 short MeSH-style search queries (3-6 words each, no connective words like "and", "the", "can", "does"). Each query should target one testable aspect of the central claim. Example for "creatine damages kidneys": ["creatine supplementation renal safety", "creatine kidney function healthy adults", "creatine nephrotoxicity risk"].`;
-}
-
-// ── Retrieval Query Generation ─────────────────────────────────────────────────
-
-/**
- * Build retrieval queries from the synthesis output.
- * Queries are derived from central_claim + supporting_claims,
- * NOT from transcript words.
- */
-export function buildRetrievalQueries(synthesis: NarrativeSynthesis): string[] {
-  const queries: string[] = [];
-
-  // Use Haiku-generated PubMed queries as primary retrieval queries
-  if (synthesis.pubmed_queries && synthesis.pubmed_queries.length > 0) {
-    queries.push(...synthesis.pubmed_queries.slice(0, 4));
-  } else {
-    // Fallback: use central_claim and supporting_claims
-    if (synthesis.central_claim) {
-      queries.push(synthesis.central_claim);
-    }
-    for (const claim of synthesis.supporting_claims.slice(0, 3)) {
-      if (claim && claim.trim().length > 10) {
-        queries.push(claim);
-      }
-    }
-  }
-
-  if (queries.length === 0 && synthesis.narrative_summary) {
-    queries.push(synthesis.narrative_summary);
-  }
-
-  console.log(`[NarrativeSynthesis] Built ${queries.length} retrieval queries from synthesis.`);
-  queries.forEach((q, i) => console.log(`  [Query ${i + 1}] ${q}`));
-
-  return queries;
+8. Focus on factual claims that can be verified against evidence, not opinions or commands.`;
 }
 
 // ── Main Synthesis Function ────────────────────────────────────────────────────
@@ -163,7 +126,6 @@ export async function synthesizeNarrative(
     synthesis.supporting_claims = synthesis.supporting_claims || [];
     synthesis.claim_domain = synthesis.claim_domain || 'general';
     synthesis.hedging_level = synthesis.hedging_level || 'low';
-    synthesis.pubmed_queries = synthesis.pubmed_queries || [];
 
     console.log('[NarrativeSynthesis] Synthesis complete:');
     console.log(`  Narrative: ${synthesis.narrative_summary.slice(0, 100)}...`);

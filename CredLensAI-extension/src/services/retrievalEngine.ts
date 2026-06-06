@@ -48,6 +48,7 @@ export class RetrievalEngine {
     const factChecks: any[] = [];
     const healthResearch: any[] = [];
     const newsArticles: any[] = [];
+    let factCheckStatus: 'available' | 'unavailable' = 'available';
 
     for (const query of retrievalQueries) {
       if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
@@ -67,6 +68,9 @@ export class RetrievalEngine {
           ).then(fc => { if (fc) factChecks.push(fc); })
            .catch((err: any) => {
              console.error('[RetrievalEngine] FactCheck failed:', err?.message);
+             if (err?.message === 'FACTCHECK_403') {
+               factCheckStatus = 'unavailable';
+             }
            })
         );
       }
@@ -104,6 +108,7 @@ export class RetrievalEngine {
     );
 
     return {
+      factCheckStatus,
       factCheck: factChecks[0] || null,
       healthResearch: healthResearch.slice(0, 10),
       newsArticles: newsArticles.slice(0, 10),
